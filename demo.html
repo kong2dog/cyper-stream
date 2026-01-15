@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyperStream 演示</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-900 text-white h-screen flex flex-col">
+    <div class="p-4 bg-gray-800 border-b border-gray-700 flex flex-wrap gap-4 items-center z-20 relative">
+        <h1 class="text-xl font-bold text-blue-400"><i class="fas fa-play-circle mr-2"></i>CyperStream</h1>
+        <div class="flex-1"></div>
+        <input type="text" id="urlInput" class="bg-gray-700 border border-gray-600 rounded px-3 py-1 w-96 text-sm focus:outline-none focus:border-blue-400" placeholder="流地址" value="http://118.112.243.192:30010/tysl/51130200441324000046.live.flv">
+        <select id="typeSelect" class="bg-gray-700 border border-gray-600 rounded px-3 py-1 text-sm focus:outline-none">
+            <option value="flv">FLV</option>
+            <option value="hls">HLS</option>
+        </select>
+        <button id="loadBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-1 rounded text-sm transition-colors">
+            <i class="fas fa-sync-alt mr-1"></i> 加载
+        </button>
+    </div>
+    
+    <div class="flex-1 flex justify-center items-center p-4 bg-black/50">
+        <div id="player" class="w-full max-w-5xl aspect-video bg-black shadow-2xl rounded-lg overflow-hidden relative border border-gray-800"></div>
+    </div>
+
+    <div class="p-4 text-xs text-gray-500 text-center">
+        高性能 H5 直播播放器 | 由 CyperStream 驱动
+    </div>
+
+    <script type="module">
+        import { CyperStream } from './src/index.js';
+
+        const player = new CyperStream({
+            container: '#player',
+            renderType: 'video', // 默认
+            autoPlay: true,
+            buffer: { maxTime: 10 }
+        });
+
+        const loadStream = () => {
+            const url = document.getElementById('urlInput').value;
+            const type = document.getElementById('typeSelect').value;
+            if(url) {
+                console.log('正在加载:', url, type);
+                player.load(url, type);
+            }
+        };
+
+        document.getElementById('loadBtn').onclick = loadStream;
+
+        // 添加通过 UI 动态切换渲染模式的支持
+        // src/ui/controls.js 中的 Controls 类修改 player.options.renderType
+        // 我们需要监听该更改或重新加载。
+        // 目前 Controls 仅更新选项。用户需要再次点击“加载”才能生效，或者我们实现自动重新加载。
+        
+        // 用于测试，尝试加载默认流
+        // loadStream();
+    </script>
+</body>
+</html>

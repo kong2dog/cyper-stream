@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyperStream Demo</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen p-8">
+
+    <div class="max-w-6xl mx-auto space-y-8">
+        <header class="flex justify-between items-center border-b border-gray-700 pb-4">
+            <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">
+                CyperStream Player
+            </h1>
+            <div class="text-sm text-gray-400">High Performance H5 Live Player</div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Main Player Area -->
+            <div class="lg:col-span-2 space-y-4">
+                <div id="player-container" class="aspect-video bg-black rounded-lg shadow-2xl overflow-hidden ring-1 ring-white/10">
+                    <!-- Player will be mounted here -->
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                    <div class="bg-gray-800 p-3 rounded">
+                        <span class="text-gray-400">Current Source:</span>
+                        <div id="current-url" class="truncate font-mono text-blue-300 mt-1"></div>
+                    </div>
+                    <div class="bg-gray-800 p-3 rounded">
+                        <span class="text-gray-400">Render Mode:</span>
+                        <div id="render-mode-display" class="font-mono text-green-300 mt-1">VIDEO</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls Area -->
+            <div class="space-y-6">
+                <div class="bg-gray-800 p-6 rounded-lg space-y-4">
+                    <h2 class="font-bold text-lg mb-4"><i class="fa-solid fa-sliders"></i> Configuration</h2>
+                    
+                    <div class="space-y-2">
+                        <label class="text-sm text-gray-400">Stream URL</label>
+                        <div class="flex gap-2">
+                            <input type="text" id="url-input" 
+                                class="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                                value="">
+                            <button id="load-btn" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm font-bold transition-colors">
+                                Load
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="space-y-2">
+                        <label class="text-sm text-gray-400">Presets</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button class="preset-btn text-xs bg-gray-700 hover:bg-gray-600 p-2 rounded truncate text-left" 
+                                data-url="">
+                                FLV Live Stream
+                            </button>
+                            <button class="preset-btn text-xs bg-gray-700 hover:bg-gray-600 p-2 rounded truncate text-left" 
+                                data-url="">
+                                HLS Test (Big Buck Bunny)
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="space-y-2 pt-4 border-t border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-400">Low Latency Mode</label>
+                            <input type="checkbox" id="ll-toggle" checked class="accent-blue-500">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm text-gray-400">Use Canvas Render</label>
+                            <input type="checkbox" id="canvas-toggle" class="accent-purple-500">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bg-gray-800 p-6 rounded-lg">
+                    <h2 class="font-bold text-lg mb-4"><i class="fa-solid fa-bug"></i> Debug Info</h2>
+                    <div class="font-mono text-xs space-y-1 text-gray-300">
+                        <div class="flex justify-between"><span>Worker Status:</span> <span class="text-green-400">Active</span></div>
+                        <div class="flex justify-between"><span>Decoder:</span> <span id="decoder-type">Auto</span></div>
+                        <div class="flex justify-between"><span>Buffer:</span> <span id="buffer-val">0s</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { CyperStream } from './src/index.js';
+
+        let player;
+        const container = document.getElementById('player-container');
+        const urlInput = document.getElementById('url-input');
+        const loadBtn = document.getElementById('load-btn');
+        const llToggle = document.getElementById('ll-toggle');
+        const canvasToggle = document.getElementById('canvas-toggle');
+
+        function initPlayer(url) {
+            if (player) {
+                player.destroy();
+                container.innerHTML = ''; // Clear DOM
+            }
+
+            player = new CyperStream(container, {
+                lowLatency: llToggle.checked,
+                renderMode: canvasToggle.checked ? 'canvas' : 'video'
+            });
+
+            player.load(url);
+            
+            // Update UI
+            document.getElementById('current-url').textContent = url;
+            document.getElementById('decoder-type').textContent = url.includes('.flv') ? 'MPEGTS.js' : 'HLS.js';
+        }
+
+        loadBtn.addEventListener('click', () => {
+            initPlayer(urlInput.value);
+        });
+
+        canvasToggle.addEventListener('change', (e) => {
+            if (player) {
+                player.setRenderMode(e.target.checked ? 'canvas' : 'video');
+                document.getElementById('render-mode-display').textContent = e.target.checked ? 'CANVAS' : 'VIDEO';
+            }
+        });
+
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                urlInput.value = btn.dataset.url;
+                initPlayer(btn.dataset.url);
+            });
+        });
+
+        // Auto init
+        initPlayer(urlInput.value);
+    </script>
+</body>
+</html>
