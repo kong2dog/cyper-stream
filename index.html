@@ -112,7 +112,7 @@
                 renderMode: canvasToggle.checked ? 'canvas' : 'video'
             });
 
-            player.load(url);
+            player.play(url);
             
             // Update UI
             document.getElementById('current-url').textContent = url;
@@ -124,10 +124,8 @@
         });
 
         canvasToggle.addEventListener('change', (e) => {
-            if (player) {
-                player.setRenderMode(e.target.checked ? 'canvas' : 'video');
-                document.getElementById('render-mode-display').textContent = e.target.checked ? 'CANVAS' : 'VIDEO';
-            }
+             initPlayer(urlInput.value);
+             document.getElementById('render-mode-display').textContent = e.target.checked ? 'CANVAS' : 'VIDEO';
         });
 
         document.querySelectorAll('.preset-btn').forEach(btn => {

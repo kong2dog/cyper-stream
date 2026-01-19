@@ -10,9 +10,13 @@
   },
   "dependencies": {
     "hls.js": "^1.5.0",
-    "mpegts.js": "^1.7.3"
+    "mpegts.js": "^1.7.3",
+    "recordrtc": "^5.6.2",
+    "screenfull": "^6.0.2"
   },
   "devDependencies": {
+    "@esbuild/linux-x64": "^0.21.5",
+    "@rollup/rollup-linux-x64-gnu": "^4.55.1",
     "autoprefixer": "^10.4.16",
     "postcss": "^8.4.31",
     "tailwindcss": "^3.3.5",
