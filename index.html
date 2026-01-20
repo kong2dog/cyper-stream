@@ -112,7 +112,9 @@
                 renderMode: canvasToggle.checked ? 'canvas' : 'video'
             });
 
-            player.play(url);
+            if (url) {
+                player.play(url);
+            }
             
             // Update UI
             document.getElementById('current-url').textContent = url;

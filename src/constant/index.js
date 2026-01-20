@@ -32,9 +32,9 @@ export const DEFAULT_PLAYER_OPTIONS = {
   isResize: true,
   isFullResize: false,
   isFlv: false,
-  debug: false,
+  debug: true,
   hotKey: false,
-  loadingTimeout: 10, // loading timeout
+  loadingTimeout: 30, // loading timeout
   heartTimeout: 5, // heart timeout
   timeout: 10, // second
   loadingTimeoutReplay: true,

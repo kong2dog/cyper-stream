@@ -10,7 +10,7 @@ export default class Emitter {
    */
   constructor() {
     // 使用 Object.create(null) 创建纯净对象，避免原型链污染
-    this.events = Object.create(null);
+    this._events = Object.create(null);
   }
 
   /**
@@ -26,7 +26,7 @@ export default class Emitter {
       return this;
     }
 
-    const events = this.events[name] || (this.events[name] = []);
+    const events = this._events[name] || (this._events[name] = []);
     events.push({ fn, ctx });
     return this;
   }
@@ -47,9 +47,7 @@ export default class Emitter {
 
     const listener = (...args) => {
       this.off(name, listener);
-      Promise.resolve().then(() => {
-        fn.apply(ctx, args);
-      }); // 防止阻塞进程
+      fn.apply(ctx, args);
     };
 
     // 保存原始函数的引用，以便可以通过原始函数名移除监听
@@ -64,7 +62,7 @@ export default class Emitter {
    * @returns {Emitter} 返回当前实例
    */
   emit(name, ...args) {
-    const events = this.events[name];
+    const events = this._events[name];
 
     if (!events || events.length === 0) {
       return this;
@@ -73,12 +71,20 @@ export default class Emitter {
     // 复制数组以防止在回调执行期间事件队列被修改（如在回调中调用 off）
     const copy = events.slice();
 
-    for (let i = 0; i < copy.length; i++) {
-      const { fn, ctx } = copy[i];
-      Promise.resolve().then(() => {
-        fn.apply(ctx, args);
-      }); // 防止阻塞进程
-    }
+    // 使用微任务异步执行回调，避免阻塞主线程
+    Promise.resolve().then(() => {
+      for (let i = 0; i < copy.length; i++) {
+        const { fn, ctx } = copy[i];
+        try {
+          fn.apply(ctx, args);
+        } catch (e) {
+          console.error(
+            `Emitter Error: error in event handler for "${name}"`,
+            e,
+          );
+        }
+      }
+    });
 
     return this;
   }
@@ -92,30 +98,38 @@ export default class Emitter {
   off(name, callback) {
     // 1. 如果没有参数，清空所有事件
     if (!name) {
-      this.events = Object.create(null);
+      this._events = Object.create(null);
       return this;
     }
 
-    const events = this.events[name];
+    const events = this._events[name];
     if (!events) {
       return this;
     }
 
     // 2. 如果没有指定回调，移除该事件名称下的所有监听
     if (!callback) {
-      delete this.events[name];
+      delete this._events[name];
       return this;
     }
 
-    // 3. 移除指定的回调函数
-    const liveEvents = events.filter(
-      (item) => item.fn !== callback && item.fn._ !== callback,
-    );
+    // 3. 移除指定的回调
+    const liveEvents = [];
+    for (let i = 0; i < events.length; i++) {
+      const listener = events[i];
+      if (
+        listener.fn !== callback &&
+        listener.fn._ !== callback &&
+        (!listener.fn._ || listener.fn._ !== callback)
+      ) {
+        liveEvents.push(listener);
+      }
+    }
 
     if (liveEvents.length) {
-      this.events[name] = liveEvents;
+      this._events[name] = liveEvents;
     } else {
-      delete this.events[name];
+      delete this._events[name];
     }
 
     return this;

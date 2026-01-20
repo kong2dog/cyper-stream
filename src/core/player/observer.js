@@ -1,48 +1,56 @@
-import {getTarget} from "../../utils";
+import { getTarget } from "../../utils";
 
 export default (player) => {
+  const {
+    _opt,
+    debug,
+    events: { proxy },
+  } = player;
 
-    const {
-        _opt,
-        debug,
-        events: {proxy},
-    } = player;
+  if (_opt.supportDblclickFullscreen) {
+    proxy(player.$container, "dblclick", (e) => {
+      const target = getTarget(e);
+      const nodeName = target.nodeName.toLowerCase();
+      if (nodeName === "canvas" || nodeName === "video") {
+        player.fullscreen = !player.fullscreen;
+      }
+    });
+  }
 
+  //
+  proxy(document, "visibilitychange", () => {
+    if (_opt.hiddenAutoPause) {
+      debug.log(
+        "visibilitychange",
+        document.visibilityState,
+        player._isPlayingBeforePageHidden,
+      );
 
-    if (_opt.supportDblclickFullscreen) {
-        proxy(player.$container, 'dblclick', (e) => {
-            const target = getTarget(e);
-            const nodeName = target.nodeName.toLowerCase();
-            if (nodeName === 'canvas' || nodeName === 'video') {
-                player.fullscreen = !player.fullscreen;
-            }
-        })
+      if ("visible" === document.visibilityState) {
+        if (player._isPlayingBeforePageHidden) {
+          player.play().catch((e) => {
+            debug.warn("observer", "auto play error", e);
+          });
+        }
+      } else {
+        player._isPlayingBeforePageHidden = player.playing;
+        // hidden
+        if (player.playing) {
+          player.pause().catch((e) => {
+            debug.warn("observer", "auto pause error", e);
+          });
+        }
+      }
     }
+  });
 
-
+  proxy(window, "fullscreenchange", () => {
     //
-    proxy(document, 'visibilitychange', () => {
-        if (_opt.hiddenAutoPause) {
-            debug.log('visibilitychange', document.visibilityState, player._isPlayingBeforePageHidden)
-
-            if ("visible" === document.visibilityState) {
-                if (player._isPlayingBeforePageHidden) {
-                    player.play();
-                }
-            } else {
-                player._isPlayingBeforePageHidden = player.playing;
-                // hidden
-                if (player.playing) {
-                    player.pause();
-                }
-            }
-        }
-    })
-
-    proxy(window, 'fullscreenchange', () => {
-        //
-        if (player.keepScreenOn !== null && "visible" === document.visibilityState) {
-            player.enableWakeLock();
-        }
-    })
-}
+    if (
+      player.keepScreenOn !== null &&
+      "visible" === document.visibilityState
+    ) {
+      player.enableWakeLock();
+    }
+  });
+};

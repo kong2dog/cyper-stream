@@ -1,5 +1,4 @@
 import {
-  CYPER_EVENTS,
   DEFAULT_PLAYER_OPTIONS,
   EVENTS,
   EVENTS_ERROR,
@@ -38,22 +37,35 @@ import MseDecoder from "./decoder/mediaSource";
 import NoSleep from "../utils/noSleep";
 import screenfull from "screenfull";
 
+/**
+ * 播放器核心控制器类
+ * 负责协调各个模块（视频、音频、解码、流媒体等）的工作
+ * 继承自 Emitter 以实现事件发布订阅模式
+ */
 export default class Player extends Emitter {
+  /**
+   * 构造函数
+   * @param {HTMLElement} container - 播放器容器元素
+   * @param {Object} options - 播放器配置选项
+   */
   constructor(container, options) {
     super();
     this.$container = container;
+    // 合并默认配置和用户配置
     this._opt = Object.assign({}, DEFAULT_PLAYER_OPTIONS, options);
     this.debug = new Debug(this);
     this.debug.log("Player", "init");
 
-    // disable offscreen
+    // 强制禁用 OffscreenCanvas，避免兼容性问题
     this._opt.forceNoOffscreen = true;
 
+    // 移动端特殊处理：不自动隐藏控制栏
     if (isMobile() || isPad()) {
       this.debug.log("Player", "isMobile and set _opt.controlAutoHide false");
       this._opt.controlAutoHide = false;
     }
 
+    // 处理自动使用系统全屏的逻辑
     if (this._opt.autoUseSystemFullScreen) {
       if (screenfull.isEnabled && this._opt.useWebFullScreen) {
         this.debug.log(
@@ -74,22 +86,23 @@ export default class Player extends Emitter {
         this._opt.useWebFullScreen = true;
       }
     }
-    //
+
+    // 检测 WebCodecs 支持
     if (this._opt.useWCS) {
       this._opt.useWCS = supportWCS();
     }
 
-    //
+    // 检测 MSE 支持
     if (this._opt.useMSE) {
       this._opt.useMSE = supportMSE();
     }
 
-    //
+    // 检测是否支持 MediaStreamTrack 渲染（用于 WCS）
     if (this._opt.wcsUseVideoRender) {
       this._opt.wcsUseVideoRender = supportMediaStreamTrack();
     }
 
-    // 如果使用mse则强制不允许 webcodecs
+    // 如果使用 MSE，则强制禁用 WebCodecs 和 OffscreenCanvas
     if (this._opt.useMSE) {
       if (this._opt.useWCS) {
         this.debug.log("Player", "useWCS set true->false");
@@ -103,6 +116,7 @@ export default class Player extends Emitter {
       this._opt.forceNoOffscreen = true;
     }
 
+    // 检测 OffscreenCanvas 支持
     if (!this._opt.forceNoOffscreen) {
       if (!supportOffscreenV2()) {
         this._opt.forceNoOffscreen = true;
@@ -112,43 +126,47 @@ export default class Player extends Emitter {
       }
     }
 
+    // 如果没有音频，禁用音频按钮
     if (!this._opt.hasAudio) {
       this._opt.operateBtns.audio = false;
     }
 
     this._opt.hasControl = this._hasControl();
-    //
+
+    // 初始化状态标志
     this._loading = false;
     this._playing = false;
     this._hasLoaded = false;
     this._destroyed = false;
     this._closed = false;
 
-    //
+    // 初始化定时器引用
     this._checkHeartTimeout = null;
     this._checkLoadingTimeout = null;
     this._checkStatsInterval = null;
 
-    //
+    // 初始化统计数据
     this._startBpsTime = null;
     this._isPlayingBeforePageHidden = false;
     this._stats = {
-      buf: 0, // 当前缓冲区时长，单位毫秒,
+      buf: 0, // 当前缓冲区时长，单位毫秒
       fps: 0, // 当前视频帧率
       abps: 0, // 当前音频码率，单位bit
       vbps: 0, // 当前视频码率，单位bit
       ts: 0, // 当前视频帧pts，单位毫秒
     };
 
-    // 各个步骤的时间统计
+    // 初始化性能统计时间
     this._times = initPlayTimes();
 
-    //
+    // 初始化时间戳
     this._videoTimestamp = 0;
     this._audioTimestamp = 0;
 
+    // 注入播放器属性（如rect、width、height等）
     property(this);
 
+    // 初始化各个模块
     this.events = new Events(this);
     this.video = new Video(this);
 
@@ -157,6 +175,7 @@ export default class Player extends Emitter {
     }
     this.recorder = new Recorder(this);
 
+    // 根据配置决定是否使用 Worker 解码
     if (!this._onlyMseOrWcsVideo()) {
       this.decoderWorker = new DecoderWorker(this);
     } else {
@@ -177,13 +196,15 @@ export default class Player extends Emitter {
       this.loaded = true;
     }
 
-    //
+    // 初始化控制栏
     this.control = new Control(this);
 
+    // 移动端防止息屏
     if (isMobile()) {
       this.keepScreenOn = new NoSleep(this);
     }
 
+    // 注入事件监听和状态观察逻辑
     events(this);
     observer(this);
     this.debug.log("Player", "init and version is", VERSION);
@@ -207,6 +228,9 @@ export default class Player extends Emitter {
     }
   }
 
+  /**
+   * 销毁播放器，释放所有资源
+   */
   async destroy() {
     this._destroyed = true;
     this._loading = false;
@@ -215,6 +239,7 @@ export default class Player extends Emitter {
     this._lastVolume = null;
     this._times = initPlayTimes();
 
+    // 销毁各个子模块
     if (this.decoderWorker) {
       await this.decoderWorker.destroy();
       this.decoderWorker = null;
@@ -264,25 +289,29 @@ export default class Player extends Emitter {
       this.events = null;
     }
 
+    // 清除所有定时器
     this.clearCheckHeartTimeout();
     this.clearCheckLoadingTimeout();
     this.clearStatsInterval();
-    //
+
+    // 释放 WakeLock
     this.releaseWakeLock();
     this.keepScreenOn = null;
-    // reset stats
+
+    // 重置统计数据
     this.resetStats();
     this._audioTimestamp = 0;
     this._videoTimestamp = 0;
 
-    // 其他没法解耦的，通过 destroy 方式
+    // 触发销毁事件
     this.emit("destroy");
-    // 接触所有绑定事件
+    // 移除所有事件监听
     this.off();
 
     this.debug.log("play", "destroy end");
   }
 
+  // 全屏属性 setter
   set fullscreen(value) {
     if (isMobile() && this._opt.useWebFullScreen) {
       this.emit(EVENTS.webFullscreen, value);
@@ -297,30 +326,35 @@ export default class Player extends Emitter {
     }
   }
 
+  // 全屏属性 getter
   get fullscreen() {
     return isFullScreen() || this.webFullscreen;
   }
 
+  // 网页全屏属性 setter
   set webFullscreen(value) {
     this.emit(EVENTS.webFullscreen, value);
   }
 
+  // 网页全屏属性 getter
   get webFullscreen() {
     return this.$container.classList.contains("cyperstream-fullscreen-web");
   }
 
+  // 加载状态 setter
   set loaded(value) {
     this._hasLoaded = value;
   }
 
+  // 加载状态 getter
   get loaded() {
     return this._hasLoaded;
   }
 
-  //
+  // 播放状态 setter
   set playing(value) {
     if (value) {
-      // 将loading 设置为 false
+      // 开始播放时，loading 设置为 false
       this.loading = false;
     }
 
@@ -337,14 +371,17 @@ export default class Player extends Emitter {
     }
   }
 
+  // 播放状态 getter
   get playing() {
     return this._playing;
   }
 
+  // 音量属性 getter
   get volume() {
     return (this.audio && this.audio.volume) || 0;
   }
 
+  // 音量属性 setter
   set volume(value) {
     if (value !== this.volume) {
       this.audio && this.audio.setVolume(value);
@@ -352,10 +389,12 @@ export default class Player extends Emitter {
     }
   }
 
+  // 上次音量 getter
   get lastVolume() {
     return this._lastVolume;
   }
 
+  // 加载中状态 setter
   set loading(value) {
     if (this.loading !== value) {
       this._loading = value;
@@ -363,10 +402,12 @@ export default class Player extends Emitter {
     }
   }
 
+  // 加载中状态 getter
   get loading() {
     return this._loading;
   }
 
+  // 录制状态 setter
   set recording(value) {
     if (value) {
       if (this.playing) {
@@ -377,10 +418,12 @@ export default class Player extends Emitter {
     }
   }
 
+  // 录制状态 getter
   get recording() {
     return this.recorder ? this.recorder.recording : false;
   }
 
+  // 音频时间戳 setter
   set audioTimestamp(value) {
     if (value === null) {
       return;
@@ -388,18 +431,18 @@ export default class Player extends Emitter {
     this._audioTimestamp = value;
   }
 
-  //
+  // 音频时间戳 getter
   get audioTimestamp() {
     return this._audioTimestamp;
   }
 
-  //
+  // 视频时间戳 setter
   set videoTimestamp(value) {
     if (value === null) {
       return;
     }
     this._videoTimestamp = value;
-    // just for wasm
+    // 仅用于 WASM 解码同步
     if (!this._opt.useWCS && !this._opt.useMSE) {
       if (this.audioTimestamp && this.videoTimestamp) {
         this.audio &&
@@ -412,26 +455,27 @@ export default class Player extends Emitter {
     }
   }
 
-  //
+  // 视频时间戳 getter
   get videoTimestamp() {
     return this._videoTimestamp;
   }
 
+  // 调试模式 getter
   get isDebug() {
     return this._opt.debug === true;
   }
 
   /**
-   *
-   * @param options
+   * 更新配置选项
+   * @param {Object} options - 新的配置项
    */
   updateOption(options) {
     this._opt = Object.assign({}, this._opt, options);
   }
 
   /**
-   *
-   * @returns {Promise<unknown>}
+   * 初始化播放器各个组件
+   * @returns {Promise<void>}
    */
   init() {
     return new Promise((resolve, reject) => {
@@ -475,11 +519,13 @@ export default class Player extends Emitter {
   }
 
   /**
-   *
-   * @param url
-   * @returns {Promise<unknown>}
+   * 开始播放
+   * @param {string} url - 播放地址
+   * @param {Object} options - 播放选项
+   * @returns {Promise<void>}
    */
   play(url, options) {
+    console.log("Player", "play", url, options);
     return new Promise((resolve, reject) => {
       if (!url && !this._opt.url) {
         return reject();
@@ -498,7 +544,7 @@ export default class Player extends Emitter {
       this.init()
         .then(() => {
           this._times.playStart = now();
-          //
+          // 如果不是静音，取消静音状态
           if (this._opt.isNotMute) {
             this.mute(false);
           }
@@ -553,31 +599,31 @@ export default class Player extends Emitter {
 
           this.stream.fetchStream(url, options);
 
-          //
+          // 检查加载超时
           this.checkLoadingTimeout();
-          // fetch error
+          // 处理 fetch 错误
           this.stream.once(EVENTS_ERROR.fetchError, (error) => {
             // reject(error)
             this.emitError(EVENTS_ERROR.fetchError, error);
           });
 
-          // ws
+          // 处理 WebSocket 错误
           this.stream.once(EVENTS_ERROR.websocketError, (error) => {
             // reject(error)
             this.emitError(EVENTS_ERROR.websocketError, error);
           });
 
-          // stream end
+          // 处理流结束
           this.stream.once(EVENTS.streamEnd, (msg) => {
             // reject();
             this.emitError(EVENTS.streamEnd, msg);
           });
 
-          // success
+          // 流连接成功
           this.stream.once(EVENTS.streamSuccess, () => {
             resolve();
             this._times.streamResponse = now();
-            //
+            // 开始渲染视频
             this.video.play();
             this.checkStatsInterval();
           });
@@ -589,7 +635,8 @@ export default class Player extends Emitter {
   }
 
   /**
-   *
+   * 关闭播放器
+   * @returns {Promise<void>}
    */
   close() {
     return new Promise((resolve, reject) => {
@@ -600,16 +647,24 @@ export default class Player extends Emitter {
     });
   }
 
+  /**
+   * 暂停后恢复音频播放
+   */
   resumeAudioAfterPause() {
     if (this.lastVolume) {
       this.volume = this.lastVolume;
     }
   }
 
+  /**
+   * 内部关闭方法
+   * @private
+   * @returns {Promise<void>}
+   */
   _close() {
     return new Promise((resolve, reject) => {
       this._closed = true;
-      //
+      // 销毁流
       if (this.stream) {
         this.stream.destroy();
         this.stream = null;
@@ -620,7 +675,7 @@ export default class Player extends Emitter {
         this.demux = null;
       }
 
-      //
+      // 销毁解码 Worker
       if (this.decoderWorker) {
         this.decoderWorker.destroy();
         this.decoderWorker = null;
@@ -651,9 +706,9 @@ export default class Player extends Emitter {
         this.video.resetInit();
         this.video.pause(true);
       }
-      // release lock
+      // 释放 WakeLock
       this.releaseWakeLock();
-      // reset stats
+      // 重置统计
       this.resetStats();
       //
       this._audioTimestamp = 0;
@@ -668,9 +723,9 @@ export default class Player extends Emitter {
   }
 
   /**
-   *
-   * @param flag {boolean} 是否清除画面
-   * @returns {Promise<unknown>}
+   * 暂停播放
+   * @param {boolean} flag - 是否清除画面，默认 false
+   * @returns {Promise<void>}
    */
   pause(flag = false) {
     if (flag) {
@@ -681,8 +736,8 @@ export default class Player extends Emitter {
   }
 
   /**
-   *
-   * @param flag
+   * 静音控制
+   * @param {boolean} flag - true 为静音，false 为取消静音
    */
   mute(flag) {
     if (this.audio) {
@@ -697,16 +752,16 @@ export default class Player extends Emitter {
   }
 
   /**
-   *
+   * 调整播放器大小
    */
   resize() {
     this.video.resize();
   }
 
   /**
-   *
-   * @param fileName
-   * @param fileType
+   * 开始录制
+   * @param {string} fileName - 文件名
+   * @param {string} fileType - 文件类型
    */
   startRecord(fileName, fileType) {
     if (this.recording) {
@@ -718,7 +773,7 @@ export default class Player extends Emitter {
   }
 
   /**
-   *
+   * 停止录制并保存
    */
   stopRecordAndSave() {
     if (this.recording) {
@@ -726,6 +781,11 @@ export default class Player extends Emitter {
     }
   }
 
+  /**
+   * 检查是否显示控制栏
+   * @private
+   * @returns {boolean}
+   */
   _hasControl() {
     let result = false;
 
@@ -743,6 +803,11 @@ export default class Player extends Emitter {
     return result;
   }
 
+  /**
+   * 检查是否仅使用 MSE 或 WCS 视频渲染
+   * @private
+   * @returns {boolean}
+   */
   _onlyMseOrWcsVideo() {
     return (
       this._opt.hasAudio === false &&
@@ -750,16 +815,22 @@ export default class Player extends Emitter {
     );
   }
 
+  /**
+   * 触发心跳检查
+   */
   checkHeart() {
     this.clearCheckHeartTimeout();
     this.checkHeartTimeout();
   }
 
-  // 心跳检查，如果渲染间隔暂停了多少时间之后，就会抛出异常
+  /**
+   * 心跳超时检查
+   * 如果渲染间隔超过指定时间（默认暂停后），则抛出异常
+   */
   checkHeartTimeout() {
     this._checkHeartTimeout = setTimeout(() => {
       if (this.playing) {
-        // check again
+        // 再次检查 fps，如果不为 0 说明还在渲染
         if (this._stats.fps !== 0) {
           return;
         }
@@ -775,13 +846,18 @@ export default class Player extends Emitter {
     }, this._opt.heartTimeout * 1000);
   }
 
+  /**
+   * 开启性能统计定时器
+   */
   checkStatsInterval() {
     this._checkStatsInterval = setInterval(() => {
       this.updateStats();
     }, 1000);
   }
 
-  //
+  /**
+   * 清除心跳超时定时器
+   */
   clearCheckHeartTimeout() {
     if (this._checkHeartTimeout) {
       clearTimeout(this._checkHeartTimeout);
@@ -789,13 +865,19 @@ export default class Player extends Emitter {
     }
   }
 
-  // loading 等待时间
+  /**
+   * 检查加载超时
+   * 如果在指定时间内未加载完成，则触发超时事件
+   */
   checkLoadingTimeout() {
-    const randomTime = parseFloat((Math.floor(Math.random() * 11) - 5) / 10);
-    const newLoadingTimeout = this._opt.loadingTimeout + randomTime;
+    // 优化：移除随机时间计算，直接使用配置的 loadingTimeout
+    // const randomTime = parseFloat((Math.floor(Math.random() * 11) - 5) / 10);
+    // const newLoadingTimeout = this._opt.loadingTimeout + randomTime;
+    const newLoadingTimeout = this._opt.loadingTimeout;
+
     this.debug.log(
       "Player",
-      `checkLoadingTimeout loadingTimeout is ${this._opt.loadingTimeout} and newLoadingTimeout is ${newLoadingTimeout}`,
+      `checkLoadingTimeout loadingTimeout is ${this._opt.loadingTimeout}`,
     );
     this._checkLoadingTimeout = setTimeout(() => {
       // check again
@@ -812,6 +894,9 @@ export default class Player extends Emitter {
     }, newLoadingTimeout * 1000);
   }
 
+  /**
+   * 清除加载超时定时器
+   */
   clearCheckLoadingTimeout() {
     if (this._checkLoadingTimeout) {
       clearTimeout(this._checkLoadingTimeout);
@@ -819,6 +904,9 @@ export default class Player extends Emitter {
     }
   }
 
+  /**
+   * 清除性能统计定时器
+   */
   clearStatsInterval() {
     if (this._checkStatsInterval) {
       clearInterval(this._checkStatsInterval);
@@ -826,6 +914,10 @@ export default class Player extends Emitter {
     }
   }
 
+  /**
+   * 处理每一帧渲染
+   * 由子模块调用，用于更新状态和心跳
+   */
   handleRender() {
     if (this.isDestroyedOrClosed()) {
       return;
@@ -842,7 +934,10 @@ export default class Player extends Emitter {
     this.checkHeart();
   }
 
-  //
+  /**
+   * 更新播放统计信息
+   * @param {Object} options - 统计数据
+   */
   updateStats(options = {}) {
     if (this.isDestroyedOrClosed()) {
       return;
@@ -873,6 +968,7 @@ export default class Player extends Emitter {
     const _nowTime = now();
     const timestamp = _nowTime - this._startBpsTime;
 
+    // 每秒更新一次
     if (timestamp < 1 * 1000) {
       return;
     }
@@ -885,6 +981,9 @@ export default class Player extends Emitter {
     this._startBpsTime = _nowTime;
   }
 
+  /**
+   * 重置统计信息
+   */
   resetStats() {
     this._startBpsTime = null;
     this._stats = {
@@ -896,18 +995,27 @@ export default class Player extends Emitter {
     };
   }
 
+  /**
+   * 启用屏幕常亮（仅移动端）
+   */
   enableWakeLock() {
     if (this._opt.keepScreenOn) {
       this.keepScreenOn && this.keepScreenOn.enable();
     }
   }
 
+  /**
+   * 释放屏幕常亮
+   */
   releaseWakeLock() {
     if (this._opt.keepScreenOn) {
       this.keepScreenOn && this.keepScreenOn.disable();
     }
   }
 
+  /**
+   * 处理播放到渲染的时间统计
+   */
   handlePlayToRenderTimes() {
     if (this.isDestroyedOrClosed()) {
       return;
@@ -924,15 +1032,28 @@ export default class Player extends Emitter {
     this.emit(EVENTS.playToRenderTimes, _times);
   }
 
+  /**
+   * 获取当前配置
+   * @returns {Object}
+   */
   getOption() {
     return this._opt;
   }
 
+  /**
+   * 触发错误事件
+   * @param {string} errorType - 错误类型
+   * @param {string} message - 错误信息
+   */
   emitError(errorType, message = "") {
     this.emit(EVENTS.error, errorType, message);
     this.emit(errorType, message);
   }
 
+  /**
+   * 检查控制栏是否显示
+   * @returns {boolean}
+   */
   isControlBarShow() {
     const hasControl = this._opt.hasControl;
     const controlAutoHide = this._opt.controlAutoHide;
@@ -948,6 +1069,10 @@ export default class Player extends Emitter {
     return result;
   }
 
+  /**
+   * 获取控制栏显示状态
+   * @returns {boolean}
+   */
   getControlBarShow() {
     let result = false;
     if (this.control) {
@@ -956,6 +1081,10 @@ export default class Player extends Emitter {
     return result;
   }
 
+  /**
+   * 切换控制栏显示/隐藏
+   * @param {boolean} isShow
+   */
   toggleControlBar(isShow) {
     if (this.control) {
       this.control.toggleBar(isShow);
@@ -963,14 +1092,26 @@ export default class Player extends Emitter {
     }
   }
 
+  /**
+   * 是否已销毁
+   * @returns {boolean}
+   */
   isDestroyed() {
     return this._destroyed;
   }
 
+  /**
+   * 是否已关闭
+   * @returns {boolean}
+   */
   isClosed() {
     return this._closed;
   }
 
+  /**
+   * 是否已销毁或已关闭
+   * @returns {boolean}
+   */
   isDestroyedOrClosed() {
     return this.isDestroyed() || this.isClosed();
   }
