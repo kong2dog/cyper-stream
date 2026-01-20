@@ -9,7 +9,6 @@ import Events from "../utils/events";
 import property from "./player/property";
 import events from "./player/events";
 import {
-  bpsSize,
   fpsStatus,
   initPlayTimes,
   isFalse,
@@ -25,18 +24,14 @@ import {
 } from "../utils";
 import Video from "./video";
 import Audio from "./audio";
-import Stream from "./stream";
 import Recorder from "./recorder";
 import DecoderWorker from "./worker/index";
 import Emitter from "../utils/emitter";
-import Demux from "./demux";
-import WebcodecsDecoder from "./decoder/webcodecs";
 import Control from "./control";
-// import './style.less' // Removed LESS dependency
 import observer from "./player/observer";
-import MseDecoder from "./decoder/mediaSource";
 import NoSleep from "../utils/noSleep";
 import screenfull from "screenfull";
+import { createPipeline } from "./pipeline";
 
 /**
  * 播放器核心控制器类
@@ -177,25 +172,14 @@ export default class Player extends Emitter {
     this.recorder = new Recorder(this);
 
     // 根据配置决定是否使用 Worker 解码
+    // 注意：Worker 仍然用于 Audio 和 fallback
     if (!this._onlyMseOrWcsVideo()) {
       this.decoderWorker = new DecoderWorker(this);
     } else {
       this.loaded = true;
     }
 
-    this.stream = null;
-    this.demux = null;
     this._lastVolume = null;
-
-    if (this._opt.useWCS) {
-      this.webcodecsDecoder = new WebcodecsDecoder(this);
-      this.loaded = true;
-    }
-
-    if (this._opt.useMSE) {
-      this.mseDecoder = new MseDecoder(this);
-      this.loaded = true;
-    }
 
     // 初始化控制栏
     this.control = new Control(this);
@@ -204,6 +188,9 @@ export default class Player extends Emitter {
     if (isMobile()) {
       this.keepScreenOn = new NoSleep(this);
     }
+
+    // 初始化 Pipeline
+    this.pipeline = createPipeline(this);
 
     // 注入事件监听和状态观察逻辑
     events(this);
@@ -277,6 +264,16 @@ export default class Player extends Emitter {
     }
   }
 
+  hardReset(options) {
+    this.updateOption(options);
+    // Close pipeline
+    if (this.pipeline) {
+      this.pipeline.stop();
+    }
+    // Re-create pipeline with new options
+    this.pipeline = createPipeline(this);
+  }
+
   /**
    * 跳转到指定时间
    * @param {number} time - 单位：秒
@@ -286,8 +283,6 @@ export default class Player extends Emitter {
       // Video 模式可以直接 seek
       this.video.$videoElement.currentTime = time;
     } else {
-      // Canvas 模式对于直播流通常不支持 seek，或者需要后端配合
-      // 这里做一个简单的尝试，如果是点播流可能会生效，直播流通常无操作或跳到最新
       this.debug.warn(
         "Player",
         "Seek in canvas mode is experimental/limited for live streams",
@@ -303,8 +298,6 @@ export default class Player extends Emitter {
     if (this.video && this.video.$videoElement) {
       this.video.$videoElement.playbackRate = rate;
     }
-    // Canvas 模式下调整播放速率比较复杂，通常涉及解码器和渲染器的同步
-    // 这里暂仅支持 Video 模式，或作为后续扩展
   }
 
   /**
@@ -339,6 +332,12 @@ export default class Player extends Emitter {
     this._lastVolume = null;
     this._times = initPlayTimes();
 
+    // 停止 Pipeline
+    if (this.pipeline) {
+      this.pipeline.stop();
+      this.pipeline = null;
+    }
+
     // 销毁各个子模块
     if (this.decoderWorker) {
       await this.decoderWorker.destroy();
@@ -354,11 +353,6 @@ export default class Player extends Emitter {
       this.audio = null;
     }
 
-    if (this.stream) {
-      await this.stream.destroy();
-      this.stream = null;
-    }
-
     if (this.recorder) {
       this.recorder.destroy();
       this.recorder = null;
@@ -367,21 +361,6 @@ export default class Player extends Emitter {
     if (this.control) {
       this.control.destroy();
       this.control = null;
-    }
-
-    if (this.webcodecsDecoder) {
-      this.webcodecsDecoder.destroy();
-      this.webcodecsDecoder = null;
-    }
-
-    if (this.mseDecoder) {
-      this.mseDecoder.destroy();
-      this.mseDecoder = null;
-    }
-
-    if (this.demux) {
-      this.demux.destroy();
-      this.demux = null;
     }
 
     if (this.events) {
@@ -579,28 +558,12 @@ export default class Player extends Emitter {
    */
   init() {
     return new Promise((resolve, reject) => {
-      if (!this.stream) {
-        this.stream = new Stream(this);
-      }
+      // Pipeline initialized in constructor or hardReset.
+      // Audio/Video also initialized.
 
       if (!this.audio) {
         if (this._opt.hasAudio) {
           this.audio = new Audio(this);
-        }
-      }
-      if (!this.demux) {
-        this.demux = new Demux(this);
-      }
-
-      if (this._opt.useWCS) {
-        if (!this.webcodecsDecoder) {
-          this.webcodecsDecoder = new WebcodecsDecoder(this);
-        }
-      }
-
-      if (this._opt.useMSE) {
-        if (!this.mseDecoder) {
-          this.mseDecoder = new MseDecoder(this);
         }
       }
 
@@ -649,84 +612,17 @@ export default class Player extends Emitter {
             this.mute(false);
           }
 
-          if (this.webcodecsDecoder) {
-            this.webcodecsDecoder.once(
-              EVENTS_ERROR.webcodecsH265NotSupport,
-              () => {
-                this.emit(EVENTS_ERROR.webcodecsH265NotSupport);
-                if (!this._opt.autoWasm) {
-                  this.emit(EVENTS.error, EVENTS_ERROR.webcodecsH265NotSupport);
-                }
-              },
-            );
-          }
-
-          if (this.mseDecoder) {
-            this.mseDecoder.once(EVENTS_ERROR.mediaSourceH265NotSupport, () => {
-              this.emit(EVENTS_ERROR.mediaSourceH265NotSupport);
-              if (!this._opt.autoWasm) {
-                this.emit(EVENTS.error, EVENTS_ERROR.mediaSourceH265NotSupport);
-              }
-            });
-
-            this.mseDecoder.once(EVENTS_ERROR.mediaSourceFull, () => {
-              this.emitError(EVENTS_ERROR.mediaSourceFull);
-            });
-
-            this.mseDecoder.once(
-              EVENTS_ERROR.mediaSourceAppendBufferError,
-              () => {
-                this.emitError(EVENTS_ERROR.mediaSourceAppendBufferError);
-              },
-            );
-
-            this.mseDecoder.once(
-              EVENTS_ERROR.mediaSourceBufferListLarge,
-              () => {
-                this.emitError(EVENTS_ERROR.mediaSourceBufferListLarge);
-              },
-            );
-
-            this.mseDecoder.once(
-              EVENTS_ERROR.mediaSourceAppendBufferEndTimeout,
-              () => {
-                this.emitError(EVENTS_ERROR.mediaSourceAppendBufferEndTimeout);
-              },
-            );
-          }
-
           this.enableWakeLock();
 
-          this.stream.fetchStream(url, options);
+          // 使用 Pipeline 开始播放
+          this.pipeline.start(url);
 
           // 检查加载超时
           this.checkLoadingTimeout();
-          // 处理 fetch 错误
-          this.stream.once(EVENTS_ERROR.fetchError, (error) => {
-            // reject(error)
-            this.emitError(EVENTS_ERROR.fetchError, error);
-          });
 
-          // 处理 WebSocket 错误
-          this.stream.once(EVENTS_ERROR.websocketError, (error) => {
-            // reject(error)
-            this.emitError(EVENTS_ERROR.websocketError, error);
-          });
-
-          // 处理流结束
-          this.stream.once(EVENTS.streamEnd, (msg) => {
-            // reject();
-            this.emitError(EVENTS.streamEnd, msg);
-          });
-
-          // 流连接成功
-          this.stream.once(EVENTS.streamSuccess, () => {
-            resolve();
-            this._times.streamResponse = now();
-            // 开始渲染视频
-            this.video.play();
-            this.checkStatsInterval();
-          });
+          // Pipeline emits events which player handles?
+          // Pipeline uses player.emitError so errors are handled.
+          // Success event is handled in pipeline callback.
         })
         .catch((e) => {
           reject(e);
@@ -764,31 +660,16 @@ export default class Player extends Emitter {
   _close() {
     return new Promise((resolve, reject) => {
       this._closed = true;
-      // 销毁流
-      if (this.stream) {
-        this.stream.destroy();
-        this.stream = null;
-      }
 
-      if (this.demux) {
-        this.demux.destroy();
-        this.demux = null;
+      // Stop Pipeline
+      if (this.pipeline) {
+        this.pipeline.pause(); // or stop?
       }
 
       // 销毁解码 Worker
       if (this.decoderWorker) {
         this.decoderWorker.destroy();
         this.decoderWorker = null;
-      }
-
-      if (this.webcodecsDecoder) {
-        this.webcodecsDecoder.destroy();
-        this.webcodecsDecoder = null;
-      }
-
-      if (this.mseDecoder) {
-        this.mseDecoder.destroy();
-        this.mseDecoder = null;
       }
 
       if (this.audio) {
@@ -970,9 +851,6 @@ export default class Player extends Emitter {
    * 如果在指定时间内未加载完成，则触发超时事件
    */
   checkLoadingTimeout() {
-    // 优化：移除随机时间计算，直接使用配置的 loadingTimeout
-    // const randomTime = parseFloat((Math.floor(Math.random() * 11) - 5) / 10);
-    // const newLoadingTimeout = this._opt.loadingTimeout + randomTime;
     const newLoadingTimeout = this._opt.loadingTimeout;
 
     this.debug.log(

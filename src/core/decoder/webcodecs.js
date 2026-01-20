@@ -1,143 +1,159 @@
-import Emitter from "../../utils/emitter";
-import {EVENTS, EVENTS_ERROR, WCS_ERROR} from "../../constant";
-import {formatVideoDecoderConfigure, isFalse, isTrue, supportMediaStreamTrack} from "../../utils";
-import {parseAVCDecoderConfigurationRecord} from "../../utils/h264";
-import {parseHEVCDecoderConfigurationRecord} from "../../utils/h265";
 
-export default class WebcodecsDecoder extends Emitter {
-    constructor(player) {
-        super();
-        this.player = player;
-        this.decoder = null;
-        this.init = false;
-        this.hasInit = false;
-        this.isDecodeFirst = false;
-        this.player.debug.log('WebcodecsDecoder', 'init');
+import { EVENTS_ERROR, WCS_ERROR } from "../../constant";
+import { formatVideoDecoderConfigure, isTrue } from "../../utils";
+import { parseAVCDecoderConfigurationRecord } from "../../utils/h264";
+import { parseHEVCDecoderConfigurationRecord } from "../../utils/h265";
+
+/**
+ * Functional WebCodecs Decoder
+ * @param {Object} callbacks - { onOutput, onError, onLog }
+ * @param {Object} config - { useVideoRender }
+ * @returns {Object} - { decode, destroy }
+ */
+export function createWebcodecsDecoder(callbacks, config = {}) {
+  const { onOutput, onError, onLog } = callbacks;
+  const { useVideoRender } = config;
+
+  let decoder = null;
+  let init = false;
+  let isDecodeFirst = false;
+
+  const log = (tag, ...args) => {
+    if (onLog) onLog(tag, ...args);
+  };
+
+  const destroy = () => {
+    if (decoder) {
+      if (decoder.state !== "closed") {
+        decoder.close();
+      }
+      decoder = null;
+    }
+    init = false;
+    isDecodeFirst = false;
+    log("WebcodecsDecoder", "destroy");
+  };
+
+  const initDecoder = (msg) => {
+    // Re-create decoder if needed
+    if (decoder && decoder.state !== "closed") {
+        // If we are re-initializing, maybe close old one?
+        // Typically we configure it, but here we create new VideoDecoder.
+        // Original code: this.decoder = new VideoDecoder(...)
     }
 
-    destroy() {
-        if (this.decoder) {
-            if (this.decoder.state !== 'closed') {
-                this.decoder.close();
-            }
-            this.decoder = null;
+    decoder = new VideoDecoder({
+      output: (videoFrame) => {
+        if (!isDecodeFirst) {
+          log("WebcodecsDecoder", "first decode success");
+          isDecodeFirst = true;
         }
-        this.init = false;
-        this.hasInit = false;
-        this.isDecodeFirst = false;
-        this.off();
-        this.player.debug.log('WebcodecsDecoder', 'destroy');
+
+        if (onOutput) {
+          onOutput({
+            videoFrame,
+            ts: videoFrame.timestamp,
+          });
+        }
+      },
+      error: (e) => {
+        log("WebcodecsDecoder", "decode error", e);
+        if (onError) onError(EVENTS_ERROR.webcodecsDecodeError, e);
+        
+        // Try to reset
+        destroy();
+        // We can't easily re-init without the config msg. 
+        // Original code called `this._initDecoder()` without args which would fail?
+        // Actually original code: `this._initDecoder();` which implies msg is undefined?
+        // If msg is undefined, it crashes?
+        // Let's just destroy for now.
+      },
+    });
+
+    // Configure
+    // H264
+    if (msg.encTypeCode === 7) {
+      const configObj = formatVideoDecoderConfigure(msg.avcC);
+      decoder.configure(configObj);
+      init = true;
     }
+    // H265
+    else if (msg.encTypeCode === 12) {
+      const configObj = {
+        codec: msg.codec,
+        description: msg.avcC,
+      };
+      
+      isSupported(configObj).then((supported) => {
+          if (isTrue(supported)) {
+              decoder.configure(configObj);
+              init = true;
+          } else {
+              if (onError) onError(EVENTS_ERROR.webcodecsH265NotSupport);
+          }
+      });
+    }
+  };
 
-    _initDecoder(msg) {
-        const _opt = this.player._opt;
-        const _this = this;
-        this.decoder = new VideoDecoder({
-            output: (videoFrame) => {
-                if (!this.isDecodeFirst) {
-                    this.player.debug.log('WebcodecsDecoder', 'first decode success');
-                    this.isDecodeFirst = true;
-                    //
-                    if (this.player.video.trackGenerator) {
-                        this.player.debug.log('WebcodecsDecoder', 'trackGenerator is true and emit play');
-                        this.player.emit(EVENTS.play);
-                    }
-                }
-                this.player.video.render({
-                    videoFrame,
-                    ts: videoFrame.timestamp
-                });
+  const decode = (packet) => {
+    const { payload, ts, isIFrame } = packet;
 
-                if (_opt.wcsUseVideoRender) {
-                    //
-                } else {
-                    this.player.updateStats({fps: true, ts: videoFrame.timestamp, buf: 0});
-                }
-            },
-            error: (e) => {
-                this.player.debug.error('WebcodecsDecoder', 'decode error', e);
-                this.player.emit(EVENTS.error, EVENTS_ERROR.webcodecsDecodeError);
-                // reset
-                this.destroy();
-                this._initDecoder();
-                this.player.emit(EVENTS.timeUpdate, 0);
-            }
+    if (!init) {
+      // Parse Config
+      // H264 (0x17 0x00)
+      if (payload[0] === 0x17 && payload[1] === 0x00) {
+        const avcC = payload.slice(5);
+        const meta = parseAVCDecoderConfigurationRecord(avcC);
+        initDecoder({
+          encTypeCode: 7,
+          avcC: avcC,
+          codec: meta.codec,
         });
+      }
+      // H265 (0x1c 0x00)
+      else if (payload[0] === 0x1c && payload[1] === 0x00) {
+        const avcC = payload.slice(5);
+        const meta = parseHEVCDecoderConfigurationRecord(avcC);
+        initDecoder({
+          encTypeCode: 12,
+          avcC: avcC,
+          codec: meta.codec,
+        });
+      }
+    } else {
+      if (!decoder || decoder.state === "closed") return;
 
-        // H264
-        if (msg.encTypeCode === 7) {
-            const config = formatVideoDecoderConfigure(msg.avcC);
-            this.decoder.configure(config);
-            this.init = true;
-        }
-        // H265
-        else if (msg.encTypeCode === 12) {
-            //
-            const config = {
-                codec: msg.codec,
-                description: msg.avcC
-            };
-            isTrue(isSupported(config)) && this.decoder.configure(config);
-            this.init = true;
-        }
-    }
+      const chunk = new EncodedVideoChunk({
+        type: isIFrame ? "key" : "delta",
+        timestamp: ts,
+        data: payload,
+      });
 
-    decodeVideo(payload, ts, isIFrame) {
-        if (!this.init) {
-            // H264
-            if (payload[0] === 0x17 && payload[1] === 0x00) {
-                const avcC = payload.slice(5);
-                const meta = parseAVCDecoderConfigurationRecord(avcC);
-                this._initDecoder({
-                    encTypeCode: 7,
-                    avcC: avcC,
-                    codec: meta.codec
-                });
-            }
-            // H265
-            else if (payload[0] === 0x1c && payload[1] === 0x00) {
-                const avcC = payload.slice(5);
-                const meta = parseHEVCDecoderConfigurationRecord(avcC);
-                this._initDecoder({
-                    encTypeCode: 12,
-                    avcC: avcC,
-                    codec: meta.codec
-                });
-            }
+      try {
+        decoder.decode(chunk);
+      } catch (e) {
+        const error = e.toString();
+        if (error.indexOf(WCS_ERROR.keyframeIsRequiredError) !== -1) {
+          log("WebcodecsDecoder", "key frame is required");
+        } else if (error.indexOf(WCS_ERROR.canNotDecodeClosedCodec) !== -1) {
+          log("WebcodecsDecoder", "can not decode closed codec");
         } else {
-            //
-            if (this.decoder.state === 'closed') {
-                return;
-            }
-            //
-            if (isIFrame) {
-                //
-            }
-            //
-            const chunk = new EncodedVideoChunk({
-                type: isIFrame ? 'key' : 'delta',
-                timestamp: ts,
-                data: payload
-            });
-            try {
-                this.decoder.decode(chunk);
-            } catch (e) {
-                const error = e.toString();
-                if (error.indexOf(WCS_ERROR.keyframeIsRequiredError) !== -1) {
-                    this.player.debug.warn('WebcodecsDecoder', 'key frame is required');
-                } else if (error.indexOf(WCS_ERROR.canNotDecodeClosedCodec) !== -1) {
-                    this.player.debug.warn('WebcodecsDecoder', 'can not decode closed codec');
-                } else {
-                    this.player.debug.error('WebcodecsDecoder', 'decode error', e);
-                }
-            }
+          log("WebcodecsDecoder", "decode error", e);
         }
+      }
     }
+  };
+
+  log("WebcodecsDecoder", "init");
+
+  return {
+    decode,
+    destroy,
+  };
 }
 
-
 function isSupported(config) {
-    return VideoDecoder.isConfigSupported(config).then((support) => {
-        return support.supported;
-    });
+  return VideoDecoder.isConfigSupported(config).then((support) => {
+    return support.supported;
+  });
 }
