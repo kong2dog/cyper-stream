@@ -9,6 +9,7 @@ import Events from "../utils/events";
 import property from "./player/property";
 import events from "./player/events";
 import {
+  bpsSize,
   fpsStatus,
   initPlayTimes,
   isFalse,
@@ -226,6 +227,105 @@ export default class Player extends Emitter {
     } catch (e) {
       // ignore
     }
+  }
+
+  /**
+   * 切换渲染模式 (Video / Canvas)
+   * @param {string} mode - 'video' | 'canvas'
+   */
+  switchRenderType(mode) {
+    this.debug.log("Player", "switchRenderType", mode);
+
+    // 保存当前状态
+    const currentTime = this.currentTime || 0;
+    const isPlaying = this.playing;
+    const volume = this.volume;
+    const url = this._opt.url;
+
+    // 构造新的配置
+    const newOptions = {};
+    if (mode === "video") {
+      newOptions.useMSE = true;
+      newOptions.useWCS = false;
+      newOptions.useOffscreen = false;
+    } else {
+      newOptions.useMSE = false;
+      // 尝试启用 WCS 或 WASM
+      newOptions.useWCS = supportWCS();
+      newOptions.useOffscreen = supportOffscreenV2();
+    }
+
+    // 重置并应用新配置
+    this.hardReset(newOptions);
+
+    // 重新播放
+    if (url) {
+      this.play(url)
+        .then(() => {
+          // 恢复状态
+          this.volume = volume;
+          if (currentTime > 0) {
+            this.seek(currentTime);
+          }
+          if (!isPlaying) {
+            this.pause();
+          }
+        })
+        .catch((e) => {
+          this.debug.error("Player", "switchRenderType play failed", e);
+        });
+    }
+  }
+
+  /**
+   * 跳转到指定时间
+   * @param {number} time - 单位：秒
+   */
+  seek(time) {
+    if (this.video && this.video.$videoElement) {
+      // Video 模式可以直接 seek
+      this.video.$videoElement.currentTime = time;
+    } else {
+      // Canvas 模式对于直播流通常不支持 seek，或者需要后端配合
+      // 这里做一个简单的尝试，如果是点播流可能会生效，直播流通常无操作或跳到最新
+      this.debug.warn(
+        "Player",
+        "Seek in canvas mode is experimental/limited for live streams",
+      );
+    }
+  }
+
+  /**
+   * 设置播放速率
+   * @param {number} rate
+   */
+  setPlaybackRate(rate) {
+    if (this.video && this.video.$videoElement) {
+      this.video.$videoElement.playbackRate = rate;
+    }
+    // Canvas 模式下调整播放速率比较复杂，通常涉及解码器和渲染器的同步
+    // 这里暂仅支持 Video 模式，或作为后续扩展
+  }
+
+  /**
+   * 切换播放/暂停状态
+   */
+  togglePlay() {
+    if (this.playing) {
+      this.pause();
+    } else {
+      this.play();
+    }
+  }
+
+  /**
+   * 获取当前播放时间
+   */
+  get currentTime() {
+    if (this.video && this.video.$videoElement) {
+      return this.video.$videoElement.currentTime;
+    }
+    return 0; // Canvas 模式可能需要从 decoder 或 stats 中获取
   }
 
   /**

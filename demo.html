@@ -31,6 +31,7 @@
 
     <script type="module">
         import { CyperStream } from './src/index.js';
+        import { Controls } from './src/ui/controls.js';
 
         const player = new CyperStream({
             container: '#player',
@@ -38,6 +39,9 @@
             autoPlay: true,
             buffer: { maxTime: 10 }
         });
+
+        // 初始化自定义控制栏
+        const controls = new Controls(player);
 
         const loadStream = () => {
             const url = document.getElementById('urlInput').value;
@@ -50,11 +54,6 @@
 
         document.getElementById('loadBtn').onclick = loadStream;
 
-        // 添加通过 UI 动态切换渲染模式的支持
-        // src/ui/controls.js 中的 Controls 类修改 player.options.renderType
-        // 我们需要监听该更改或重新加载。
-        // 目前 Controls 仅更新选项。用户需要再次点击“加载”才能生效，或者我们实现自动重新加载。
-        
         // 用于测试，尝试加载默认流
         // loadStream();
     </script>

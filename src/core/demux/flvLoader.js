@@ -1,6 +1,7 @@
 import { FLV_MEDIA_TYPE, MEDIA_TYPE } from "../../constant";
 import CommonLoader from "./commonLoader";
 import { now } from "../../utils";
+import { decodeALaw } from "../../utils/g711.js";
 
 /**
  * @file flvLoader.js
@@ -23,6 +24,7 @@ export default class FlvLoader extends CommonLoader {
     this.input = this._inputFlv();
     // 创建数据分发闭包
     this.flvDemux = this.dispatchFlvData(this.input);
+    this._firstAudio = true; // Flag for first audio packet
     player.debug.log("FlvDemux", "init");
   }
 
@@ -112,8 +114,41 @@ export default class FlvLoader extends CommonLoader {
               abps: payload.byteLength,
             });
             if (payload.byteLength > 0) {
-              // 分发音频数据
-              this._doDecode(payload, MEDIA_TYPE.audio, ts);
+              const firstByte = payload[0];
+              const soundFormat = (firstByte & 0xf0) >> 4;
+
+              // CodecID 7 = G.711 A-law (ALAW)
+              if (soundFormat === 7) {
+                // G.711 A-law data (skip 1 byte header)
+                const audioData = payload.subarray(1);
+                // Decode to PCM (Float32) using our JS decoder
+                const pcmData = decodeALaw(audioData);
+
+                // 如果是第一次收到 ALAW，初始化 AudioContext 并更新信息
+                if (this._firstAudio) {
+                  this.player.debug.log(
+                    "FlvLoader",
+                    "Detected G.711 A-law audio, utilizing JS decoder",
+                  );
+                  this._firstAudio = false;
+                  // ALAW 通常是 8000Hz 单声道
+                  if (this.player.audio) {
+                    this.player.audio.updateAudioInfo({
+                      codecId: 7,
+                      sampleRate: 8000,
+                      channels: 1,
+                    });
+                  }
+                }
+
+                // 直接发送 PCM 数据播放，绕过 worker 解码流程
+                if (this.player.audio) {
+                  this.player.audio.playPcm(pcmData, ts);
+                }
+              } else {
+                // 其他格式 (如 AAC) 走原有流程 (发送到 worker 解码)
+                this._doDecode(payload, MEDIA_TYPE.audio, ts);
+              }
             }
           }
           break;
@@ -129,6 +164,11 @@ export default class FlvLoader extends CommonLoader {
             // 解析 VideoTagHeader (1 byte minimum)
             // FrameType (4 bits) + CodecID (4 bits)
             const flags = payload[0];
+            const codecId = flags & 0x0f;
+            this.player.debug.log(
+              "FlvLoader",
+              `Video Tag: flags=${flags.toString(16)}, codecId=${codecId}`,
+            );
 
             // 处理增强型 H.265 (Enhanced RTMP)
             if (this._isEnhancedH265Header(flags)) {

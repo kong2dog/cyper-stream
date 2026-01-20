@@ -57,8 +57,9 @@ export default class MediaSourceDecoder extends Emitter {
     _initDecoder(msg) {
         const _opt = this.player._opt;
         const mimeType = formatMp4VideoCodec(msg.codec);
-        this.player.debug.log('MediaSourceDecoder', `initDecoder mimeType:${mimeType}`);
+        this.player.debug.log('MediaSourceDecoder', `initDecoder check mimeType:${mimeType}`);
         if (MediaSource.isTypeSupported(mimeType)) {
+            this.player.debug.log('MediaSourceDecoder', `isTypeSupported true mimeType:${mimeType}`);
             this.sourceBuffer = this.mediaSource.addSourceBuffer(mimeType);
             this.sourceBuffer.addEventListener('updateend', () => {
                 // this.player.debug.log('MediaSourceDecoder', 'updateend');
@@ -85,6 +86,13 @@ export default class MediaSourceDecoder extends Emitter {
         }
 
         if (!this.init) {
+            // H265
+            if (payload[0] === 0x1c && payload[1] === 0x00) {
+                this.player.debug.error('MediaSourceDecoder', 'H.265 not supported in MediaSourceDecoder');
+                this.player.emit(EVENTS_ERROR.mediaSourceH265NotSupport);
+                return;
+            }
+
             // H264
             if (payload[0] === 0x17 && payload[1] === 0x00) {
                 const avcC = payload.slice(5);

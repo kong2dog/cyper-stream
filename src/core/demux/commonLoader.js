@@ -201,6 +201,7 @@ export default class CommonLoader extends Emitter {
     // //! 跨平台/解码方案路由 (WCS / MSE / Worker)
     // 1. WebCodecs (且非 Offscreen 模式)
     if (player._opt.useWCS && !player._opt.useOffscreen) {
+      console.log("useWCS", type, ts, isIFrame, cts);
       if (type === MEDIA_TYPE.video) {
         options.isIFrame = isIFrame;
       }
@@ -208,6 +209,7 @@ export default class CommonLoader extends Emitter {
     }
     // 2. MSE (Media Source Extensions)
     else if (player._opt.useMSE) {
+      console.log("useMSE", type, ts, isIFrame, cts);
       // console.log(2);
       if (type === MEDIA_TYPE.video) {
         options.isIFrame = isIFrame;
@@ -216,6 +218,7 @@ export default class CommonLoader extends Emitter {
     }
     // 3. Worker (软解或 Offscreen WCS)
     else {
+      console.log("useWorker", type, ts, isIFrame, cts);
       if (type === MEDIA_TYPE.video) {
         player.decoderWorker &&
           player.decoderWorker.decodeVideo(payload, ts, isIFrame);
