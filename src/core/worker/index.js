@@ -83,7 +83,7 @@ export default class DecoderWorker {
                     }
                     break;
                 case WORKER_CMD_TYPE.playAudio:
-                    // debug.log(`decoderWorker`, 'onmessage:', WORKER_CMD_TYPE.playAudio, `msg ts:${msg.ts}`);
+                    // debug.log(`decoderWorker`, 'onmessage:', WORKER_CMD_TYPE.playAudio, `msg ts:${msg.ts}, len:${msg.buffer.byteLength}`);
                     if (this.player.playing && this.player.audio) {
                         this.player.audio.play(msg.buffer, msg.ts);
                     }

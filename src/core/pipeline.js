@@ -133,11 +133,6 @@ export function createPipeline(player) {
                 player.decoderWorker.decodeAudio(packet.payload, packet.ts);
               }
             }
-          } else if (packet.type === "pcm") {
-            // G711a PCM
-            if (player.audio) {
-              player.audio.playPcm(packet.payload, packet.ts);
-            }
           }
         },
       },

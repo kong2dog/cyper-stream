@@ -1,64 +1,113 @@
 import Emitter from "../../utils/emitter";
-import { AUDIO_ENC_TYPE, EVENTS } from "../../constant";
-import { audioContextUnlock, isFalse, isTrue } from "../../utils";
+import {
+  AUDIO_ENC_TYPE,
+  AUDIO_SYNC_VIDEO_DIFF,
+  EVENTS,
+  VIDEO_ENC_TYPE,
+} from "../../constant";
+import { clamp, noop } from "../../utils";
 
 export default class AudioContextLoader extends Emitter {
   constructor(player) {
     super();
+    this.bufferList = [];
     this.player = player;
-    this.audioContext = null;
-    this.gainNode = null;
+    this.scriptNode = null;
+    this.hasInitScriptNode = false;
+    this.audioContextChannel = null;
+
+    this.audioContext = new (
+      window.AudioContext || window.webkitAudioContext
+    )();
+    //
+    this.gainNode = this.audioContext.createGain();
+    // Get an AudioBufferSourceNode.
+    // This is the AudioNode to use when we want to play an AudioBuffer
+    const source = this.audioContext.createBufferSource();
+    // set the buffer in the AudioBufferSourceNode
+    source.buffer = this.audioContext.createBuffer(1, 1, 22050);
+    // connect the AudioBufferSourceNode to the
+    // destination so we can hear the sound
+    source.connect(this.audioContext.destination);
+    // noteOn as start
+    // start the source playing
+    if (source.noteOn) {
+      source.noteOn(0);
+    } else {
+      source.start(0);
+    }
+    this.audioBufferSourceNode = source;
+    //
+    this.mediaStreamAudioDestinationNode =
+      this.audioContext.createMediaStreamDestination();
+    //
+    this.audioEnabled(true);
+    // default setting 0
+    this.gainNode.gain.value = 0;
+    this._prevVolume = null;
+
     this.playing = false;
+    //
+    this.audioSyncVideoOption = {
+      diff: null,
+    };
+
     this.audioInfo = {
       encType: "",
       channels: "",
       sampleRate: "",
     };
-    this.scriptNode = null;
-    this.audioBufferList = [];
-    this.audioEnabled = true;
-    this.audioContext = new (
-      window.AudioContext || window.webkitAudioContext
-    )();
-    this.gainNode = this.audioContext.createGain();
-    this.gainNode.connect(this.audioContext.destination);
-    this.gainNode.gain.value = 0.5;
-    this.init();
-    this.player.debug.log("Audio", "init");
+    this.init = false;
+    this.hasAudio = false;
+
+    // update
+    this.on(EVENTS.videoSyncAudio, (options) => {
+      // this.player.debug.log('AudioContext', `videoSyncAudio , audioTimestamp: ${options.audioTimestamp},videoTimestamp: ${options.videoTimestamp},diff:${options.diff}`)
+      this.audioSyncVideoOption = options;
+    });
+
+    this.player.debug.log("AudioContext", "init");
   }
 
-  init() {
-    if (this.audioContext.state === "suspended") {
-      audioContextUnlock(this.audioContext);
-    }
-    this.audioEnabled = true;
+  resetInit() {
+    this.init = false;
+    this.audioInfo = {
+      encType: "",
+      channels: "",
+      sampleRate: "",
+    };
   }
 
-  destroy() {
-    if (this.scriptNode) {
-      this.scriptNode.disconnect();
-      this.scriptNode = null;
-    }
-    if (this.gainNode) {
-      this.gainNode.disconnect();
-      this.gainNode = null;
-    }
+  async destroy() {
+    this.closeAudio();
+    this.resetInit();
     if (this.audioContext) {
-      this.audioContext.close();
+      await this.audioContext.close();
       this.audioContext = null;
     }
-    this.audioBufferList = [];
+
+    this.gainNode = null;
+    this.hasAudio = false;
     this.playing = false;
+    if (this.scriptNode) {
+      this.scriptNode.onaudioprocess = noop;
+      this.scriptNode = null;
+    }
+    this.audioBufferSourceNode = null;
+    this.mediaStreamAudioDestinationNode = null;
+    this.hasInitScriptNode = false;
+    this.audioSyncVideoOption = {
+      diff: null,
+    };
+    this._prevVolume = null;
     this.off();
-    this.player.debug.log("Audio", "destroy");
+    this.player.debug.log("AudioContext", "destroy");
   }
 
   updateAudioInfo(data) {
-    if (data.codecId) {
-      // 临时处理，兼容 flvLoader 传来的 codecId
-      if (data.codecId === 7) this.audioInfo.encType = "ALAW";
-    } else if (data.encTypeCode) {
+    if (data.encTypeCode) {
       this.audioInfo.encType = AUDIO_ENC_TYPE[data.encTypeCode];
+      this.audioInfo.encTypeCode = data.encTypeCode;
     }
 
     if (data.channels) {
@@ -68,228 +117,240 @@ export default class AudioContextLoader extends Emitter {
     if (data.sampleRate) {
       this.audioInfo.sampleRate = data.sampleRate;
     }
-    //
+
+    // audio 基本信息
     if (
-      this.audioInfo.encType &&
+      this.audioInfo.sampleRate &&
       this.audioInfo.channels &&
-      this.audioInfo.sampleRate
+      this.audioInfo.encType &&
+      !this.init
     ) {
       this.player.emit(EVENTS.audioInfo, this.audioInfo);
-
-      // 初始化 scriptNode
-      if (!this.scriptNode) {
-        this.initScriptNode({ channels: this.audioInfo.channels });
-      }
+      this.init = true;
     }
   }
 
-  initScriptNode(msg) {
-    if (!msg) {
+  //
+  get isPlaying() {
+    return this.playing;
+  }
+
+  get isMute() {
+    return this.gainNode.gain.value === 0;
+  }
+
+  get volume() {
+    return this.gainNode.gain.value;
+  }
+
+  get bufferSize() {
+    return this.bufferList.length;
+  }
+
+  initScriptNode() {
+    this.playing = true;
+
+    if (this.hasInitScriptNode) {
       return;
     }
-    //
-    const channels = msg.channels;
-    // 使用 2048 缓冲区大小
-    const bufferSize = 2048;
+    const channels = this.audioInfo.channels;
+
     const scriptNode = this.audioContext.createScriptProcessor(
-      bufferSize,
+      1024,
       0,
       channels,
     );
-
-    // 音频重采样缓冲区
-    this._leftOverBuffer = null;
-
+    // tips: if audio isStateSuspended  onaudioprocess method not working
     scriptNode.onaudioprocess = (audioProcessingEvent) => {
       const outputBuffer = audioProcessingEvent.outputBuffer;
-      const outputData = outputBuffer.getChannelData(0); // Assuming mono for ALAW 8000Hz usually
 
-      // 简单逻辑：从 audioBufferList 取数据填充
-      // 实际 ALAW (8000Hz) -> AudioContext (44100/48000Hz) 需要重采样
-      // 这里我们先用最简单的线性插值或零阶保持来做演示，或者依赖浏览器自动处理（如果是 buffer source）
-      // 但 scriptProcessor 需要我们自己填数据。
+      if (this.bufferList.length && this.playing) {
+        // just for wasm
+        if (
+          !this.player._opt.useWCS &&
+          !this.player._opt.useMSE &&
+          this.player._opt.wasmDecodeAudioSyncVideo
+        ) {
+          // audio > video
+          // wait
+          if (this.audioSyncVideoOption.diff > AUDIO_SYNC_VIDEO_DIFF) {
+            this.player.debug.warn(
+              "AudioContext",
+              `audioSyncVideoOption more than diff :${this.audioSyncVideoOption.diff}, waiting`,
+            );
+            // wait
+            return;
+          }
+          // audio < video
+          // throw away then chase video
+          else if (this.audioSyncVideoOption.diff < -AUDIO_SYNC_VIDEO_DIFF) {
+            this.player.debug.warn(
+              "AudioContext",
+              `audioSyncVideoOption less than diff :${this.audioSyncVideoOption.diff}, dropping`,
+            );
 
-      // 由于 PCM 数据块大小不一定等于 bufferSize，我们需要一个环形缓冲或简单的剩余缓冲
-      let requiredSamples = bufferSize;
-      let outputIndex = 0;
+            //
+            let bufferItem = this.bufferList.shift();
+            //
+            while (
+              bufferItem.ts - this.player.videoTimestamp <
+                -AUDIO_SYNC_VIDEO_DIFF &&
+              this.bufferList.length > 0
+            ) {
+              // this.player.debug.warn('AudioContext', `audioSyncVideoOption less than inner ts is:${bufferItem.ts}, videoTimestamp is ${this.player.videoTimestamp},diff:${bufferItem.ts - this.player.videoTimestamp}`)
+              bufferItem = this.bufferList.shift();
+            }
 
-      // 1. 先填充上次剩余的
-      if (this._leftOverBuffer && this._leftOverBuffer.length > 0) {
-        const take = Math.min(this._leftOverBuffer.length, requiredSamples);
-        for (let i = 0; i < take; i++) {
-          outputData[outputIndex++] = this._leftOverBuffer[i];
-        }
-        if (take < this._leftOverBuffer.length) {
-          this._leftOverBuffer = this._leftOverBuffer.subarray(take);
-          return; // 填满了
-        } else {
-          this._leftOverBuffer = null;
-        }
-      }
-
-      // 2. 从队列取新数据
-      while (outputIndex < bufferSize && this.audioBufferList.length > 0) {
-        const bufferItem = this.audioBufferList.shift();
-        const buffer = bufferItem.data || bufferItem; // 兼容不同结构
-
-        // 简单的重采样：如果源是 8000，目标是 48000，需要 6 倍插值
-        // 为了简化，我们假设 audioBufferList 里的数据已经是通过某种方式（虽然我们上面只是解码）
-        // 实际上 decodeALaw 出来的是 8000Hz 的 float32。
-        // 我们需要在这里做即时重采样
-
-        const sourceRate = this.audioInfo.sampleRate || 8000;
-        const targetRate = this.audioContext.sampleRate;
-        const ratio = sourceRate / targetRate;
-
-        // 这里的逻辑比较复杂，为了快速修复，我们先直接填充，这会导致音调变高（加速）
-        // 必须实现一个简单的线性插值重采样
-
-        // 实际上 flvLoader 传过来的是 Float32Array (8000Hz)
-        // 我们需要生成 targetRate 的数据
-
-        const inputData = buffer;
-        const inputLength = inputData.length;
-
-        // 计算输出长度
-        const outputLength = Math.ceil(inputLength / ratio);
-
-        // 简单的重采样逻辑
-        // 这里我们暂且直接把数据塞进去（如果采样率不匹配，声音会变），
-        // 更好的做法是引入 Resampler，但为了不引入外部庞大库，我们做一个简单的 Nearest Neighbor
-
-        let inputIndex = 0;
-        while (outputIndex < bufferSize && inputIndex < inputLength) {
-          // 这是一个极其简化的逻辑，实际上我们需要维护 inputIndex 的小数部分
-          // 暂时不做复杂重采样，直接拷贝（会有变速问题）
-          // 修正：G711通常是8000Hz，Context是44.1k/48k。直接拷贝会快放5-6倍。
-          // 必须插值。
-
-          // 线性插值
-          // 实际上我们应该把重采样放在 playPcm 里做，或者这里。
-          // 让我们修改 playPcm 方法来预处理，或者在这里处理
-
-          // 为了稳定性，我们先假设外部已经做了重采样或者我们在这里做
-          // 由于不能引入大库，我们用简单的重复填充
-
-          // 真正的修复：
-          // 我们在 playPcm 里接收 8000Hz 数据，但是在这里输出时，AudioContext 会按它的 sampleRate 播放
-          // 所以我们需要提供足够多的样本。
-
-          // 让我们把这个复杂逻辑简化：使用 createBufferSource 播放片段，而不是 ScriptProcessor
-          // ScriptProcessor 适合流式，但处理采样率麻烦。
-          // 改用 BufferSource 方案？不，那样会不连续。
-
-          // 回到 ScriptProcessor。
-          // 我们需要在 push 到 audioBufferList 之前就重采样好。
-          // 所以修改 playPcm 方法更好。
-
-          outputData[outputIndex++] = inputData[Math.floor(inputIndex)];
-          // inputIndex += ratio; // 错误，ratio < 1 (8000/48000 = 0.16)
-          // 应该是 inputIndex += (sourceRate / targetRate) ?
-          // 不，如果 source 8k, target 48k, 每 1 个 source 样本对应 6 个 target 样本
-          // step = 8000 / 48000 = 0.1666
-
-          // 我们还是直接拷贝吧，先确保存入逻辑是对的
-          inputIndex++;
+            if (this.bufferList.length === 0) {
+              return;
+            }
+          }
         }
 
-        // 处理剩余
-        if (inputIndex < inputLength) {
-          this._leftOverBuffer = inputData.subarray(inputIndex);
+        if (this.bufferList.length === 0) {
+          return;
+        }
+
+        const bufferItem = this.bufferList.shift();
+
+        // update audio time stamp
+        if (bufferItem && bufferItem.ts) {
+          this.player.audioTimestamp = bufferItem.ts;
+        }
+
+        for (let channel = 0; channel < channels; channel++) {
+          const b = bufferItem.buffer[channel];
+          const nowBuffering = outputBuffer.getChannelData(channel);
+          for (let i = 0; i < 1024; i++) {
+            nowBuffering[i] = b[i] || 0;
+          }
         }
       }
     };
+
     scriptNode.connect(this.gainNode);
     this.scriptNode = scriptNode;
-  }
-
-  /**
-   * 播放 PCM 数据 (Float32Array)
-   * 包含简单的重采样逻辑 (Linear Interpolation) 以适配 AudioContext 采样率
-   * @param {Float32Array} pcmData - 原始 PCM 数据
-   * @param {number} ts - 时间戳
-   */
-  playPcm(pcmData, ts) {
-    if (!this.audioEnabled || this.audioContext.state === "suspended") {
-      if (this.audioContext.state === "suspended") this.audioContext.resume();
-    }
-
-    const sourceRate = this.audioInfo.sampleRate || 8000;
-    const targetRate = this.audioContext.sampleRate;
-
-    if (sourceRate === targetRate) {
-      this.audioBufferList.push(pcmData);
-      return;
-    }
-
-    // 简单的线性插值重采样
-    const ratio = sourceRate / targetRate;
-    const outputLength = Math.round(pcmData.length / ratio);
-    const resampledData = new Float32Array(outputLength);
-
-    for (let i = 0; i < outputLength; i++) {
-      const position = i * ratio;
-      const index = Math.floor(position);
-      const decimal = position - index;
-
-      const p1 = pcmData[index];
-      const p2 = index + 1 < pcmData.length ? pcmData[index + 1] : p1;
-
-      resampledData[i] = p1 + (p2 - p1) * decimal;
-    }
-
-    this.audioBufferList.push(resampledData);
-
-    // 限制缓冲大小
-    if (this.audioBufferList.length > 50) {
-      this.audioBufferList.shift();
-    }
-  }
-
-  play(buffer, ts) {
-    if (!this.audioEnabled) {
-      return;
-    }
-    //
-    if (this.audioContext.state === "suspended") {
-      this.audioContext.resume();
-    }
-
-    if (this.audioBufferList.length > 20) {
-      this.audioBufferList = [];
-    }
-
-    this.audioBufferList.push(buffer);
-  }
-
-  setVolume(volume) {
-    if (this.gainNode) {
-      this.gainNode.gain.value = volume;
-    }
-  }
-
-  getVolume() {
-    if (this.gainNode) {
-      return this.gainNode.gain.value;
-    }
-    return 0;
+    this.gainNode.connect(this.audioContext.destination);
+    this.gainNode.connect(this.mediaStreamAudioDestinationNode);
+    this.hasInitScriptNode = true;
   }
 
   mute(flag) {
-    if (isTrue(flag)) {
+    if (flag) {
+      // if (!this.isMute) {
+      //     this.player.emit(EVENTS.mute, flag);
+      // }
       this.setVolume(0);
-      this.audioEnabled = false;
+      this.clear();
     } else {
+      // if (this.isMute) {
+      //     this.player.emit(EVENTS.mute, flag);
+      // }
       this.setVolume(0.5);
-      this.audioEnabled = true;
     }
+  }
+
+  setVolume(volume) {
+    volume = parseFloat(volume).toFixed(2);
+    if (isNaN(volume)) {
+      return;
+    }
+    this.audioEnabled(true);
+    volume = clamp(volume, 0, 1);
+    if (this._prevVolume === null) {
+      this.player.emit(EVENTS.mute, volume === 0);
+    } else {
+      if (this._prevVolume === 0 && volume > 0) {
+        this.player.emit(EVENTS.mute, false);
+      } else if (this._prevVolume > 0 && volume === 0) {
+        this.player.emit(EVENTS.mute, true);
+      }
+    }
+    this.gainNode.gain.value = volume;
+    this.gainNode.gain.setValueAtTime(volume, this.audioContext.currentTime);
+    this.player.emit(EVENTS.volumechange, this.player.volume);
+    this.player.emit(EVENTS.volume, this.player.volume); // outer
+    // save last volume
+    this._prevVolume = volume;
+  }
+
+  closeAudio() {
+    if (this.hasInitScriptNode) {
+      this.scriptNode && this.scriptNode.disconnect(this.gainNode);
+      this.gainNode && this.gainNode.disconnect(this.audioContext.destination);
+      this.gainNode &&
+        this.gainNode.disconnect(this.mediaStreamAudioDestinationNode);
+    }
+    this.clear();
+  }
+
+  // 是否播放。。。
+  audioEnabled(flag) {
+    if (flag) {
+      if (this.audioContext.state === "suspended") {
+        // resume
+        this.audioContext.resume();
+      }
+    } else {
+      if (this.audioContext.state === "running") {
+        // suspend
+        this.audioContext.suspend();
+      }
+    }
+  }
+
+  isStateRunning() {
+    return this.audioContext.state === "running";
   }
 
   isStateSuspended() {
     return this.audioContext.state === "suspended";
   }
 
-  get hasAudio() {
-    return this.audioEnabled;
+  clear() {
+    this.bufferList = [];
+  }
+
+  play(buffer, ts) {
+    // if is mute
+    if (this.isMute) {
+      return;
+    }
+
+    this.hasAudio = true;
+
+    this.bufferList.push({
+      buffer,
+      ts,
+    });
+
+    if (this.bufferList.length > 20) {
+      this.player.debug.warn(
+        "AudioContext",
+        `bufferList is large: ${this.bufferList.length}`,
+      );
+
+      // out of memory
+      if (this.bufferList.length > 50) {
+        this.bufferList.shift();
+      }
+    }
+    // this.player.debug.log('AudioContext', `bufferList is ${this.bufferList.length}`)
+  }
+
+  pause() {
+    this.audioSyncVideoOption = {
+      diff: null,
+    };
+    this.playing = false;
+    this.clear();
+  }
+
+  resume() {
+    this.playing = true;
+  }
+
+  getLastVolume() {
+    return this._prevVolume;
   }
 }
