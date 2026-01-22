@@ -46,7 +46,34 @@ export default class Player extends Emitter {
    */
   constructor(container, options) {
     super();
-    this.$container = container;
+
+    // 兼容 new Player({ container: '#id', ... }) 的单参数调用方式
+    if (
+      typeof container === "object" &&
+      !(container instanceof HTMLElement) &&
+      !options
+    ) {
+      options = container;
+      container = options.container;
+    }
+
+    // 处理字符串选择器
+    if (typeof container === "string") {
+      this.$container = document.querySelector(container);
+    } else {
+      this.$container = container;
+    }
+
+    // 如果没有传入 options，初始化为空对象
+    if (!options) {
+      options = {};
+    }
+
+    // 检查容器是否有效（仅警告，避免阻断，具体报错交给后续逻辑或此时抛出）
+    if (!this.$container) {
+      console.error("Player", "Invalid container:", container);
+    }
+
     // 合并默认配置和用户配置
     this._opt = Object.assign({}, DEFAULT_PLAYER_OPTIONS, options);
     this.debug = new Debug(this);
@@ -587,8 +614,7 @@ export default class Player extends Emitter {
    * @param {Object} options - 播放选项
    * @returns {Promise<void>}
    */
-  play(url, options) {
-    console.log("Player", "play", url, options);
+  play(url) {
     return new Promise((resolve, reject) => {
       if (!url && !this._opt.url) {
         return reject();

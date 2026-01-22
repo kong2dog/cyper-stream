@@ -6,7 +6,7 @@ import { EVENTS } from '../constant/index.js';
 export class Controls {
     constructor(player) {
         this.player = player;
-        this.container = player.container;
+        this.container = player.$container;
         this.uiLayer = null;
         this.loadingLayer = null;
         this.errorLayer = null;
@@ -135,9 +135,13 @@ export class Controls {
         `;
 
         // 4. 将所有层添加到容器
-        this.container.appendChild(this.loadingLayer);
-        this.container.appendChild(this.errorLayer);
-        this.container.appendChild(this.uiLayer);
+        if (this.container) {
+            this.container.appendChild(this.loadingLayer);
+            this.container.appendChild(this.errorLayer);
+            this.container.appendChild(this.uiLayer);
+        } else {
+            console.error('Controls', 'container is invalid', this.container);
+        }
     }
 
     bindEvents() {

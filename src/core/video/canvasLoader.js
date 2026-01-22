@@ -22,7 +22,11 @@ export default class CanvasVideoLoader extends CommonLoader {
         $canvasElement.style.top = 0;
         $canvasElement.style.left = 0;
         this.$videoElement = $canvasElement;
-        player.$container.appendChild(this.$videoElement);
+        if (player.$container && typeof player.$container.appendChild === 'function') {
+            player.$container.appendChild(this.$videoElement);
+        } else {
+            player.debug.error('CanvasVideoLoader', 'container is invalid', player.$container);
+        }
 
         this.context2D = null;
         this.contextGl = null;
