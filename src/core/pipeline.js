@@ -1,7 +1,7 @@
-import { createFetchStream } from "./stream/fetch";
-// import { createWebsocketStream } from "./stream/websocket"; // Not implemented yet
-import { createFlvDemuxer } from "./demux/flv";
-// import { createM7sDemuxer } from "./demux/m7s"; // Not implemented yet
+import { createFetchStream } from "./loader/fetchStream";
+// import { createWebsocketStream } from "./stream/websocket"; // 尚未实现
+import { createFlvDemuxer } from "./demux/flvDemux";
+// import { createM7sDemuxer } from "./demux/m7s"; // 尚未实现
 import { createScheduler } from "./scheduler";
 import { createWebcodecsDecoder } from "./decoder/webcodecs";
 import { createMseDecoder } from "./decoder/mediaSource";
@@ -15,9 +15,9 @@ import {
 import { isMobile } from "../utils";
 
 /**
- * Pipeline Orchestrator
- * Connects Stream -> Demux -> Scheduler -> Decoder -> Render
- * @param {Object} player - Player instance context
+ * 管道协调器
+ * 连接 Stream -> Demux -> Scheduler -> Decoder -> Render
+ * @param {Object} player - 播放器实例上下文
  * @returns {Object} - { start, stop, pause }
  */
 export function createPipeline(player) {
@@ -25,7 +25,7 @@ export function createPipeline(player) {
   let demuxer = null;
   let scheduler = null;
   let videoDecoder = null;
-  let audioDecoder = null; // Could be same as videoDecoder for MSE, or Worker
+  let audioDecoder = null; // 可能与 videoDecoder 相同（对于 MSE），或者是 Worker
 
   const { _opt: options, debug } = player;
 
@@ -38,8 +38,8 @@ export function createPipeline(player) {
     if (demuxer) demuxer.close();
     if (scheduler) scheduler.stop();
     if (videoDecoder) videoDecoder.destroy();
-    // audioDecoder might be shared or external (worker), so handle carefully
-    // If it's MSE, it's same instance.
+    // audioDecoder 可能是共享的或外部的（worker），所以要小心处理
+    // 如果是 MSE，它是同一个实例
 
     stream = null;
     demuxer = null;
@@ -49,12 +49,12 @@ export function createPipeline(player) {
   };
 
   const start = (url) => {
-    // 1. Create Decoder
-    // Logic from Player.js to decide decoder
+    // 1. 创建解码器
+    // 从 Player.js 中获取逻辑来决定解码器
     let useWCS = options.useWCS;
     let useMSE = options.useMSE;
 
-    // Video Decoder
+    // 视频解码器
     if (useWCS && !options.useOffscreen) {
       videoDecoder = createWebcodecsDecoder(
         {
@@ -62,7 +62,7 @@ export function createPipeline(player) {
             if (player.video) {
               player.video.render({ videoFrame, ts });
             } else {
-              // close frame if no video renderer
+              // 如果没有视频渲染器，关闭帧
               if (videoFrame.close) videoFrame.close();
             }
             player.updateStats({ fps: true, ts, buf: 0 });
@@ -89,8 +89,8 @@ export function createPipeline(player) {
         },
       );
     } else {
-      // Worker Decoder (Soft decode or Offscreen)
-      // We use player.decoderWorker
+      // Worker 解码器（软解码或离屏渲染）
+      // 我们使用 player.decoderWorker
       videoDecoder = {
         decode: (packet) => {
           if (player.decoderWorker) {
@@ -105,7 +105,7 @@ export function createPipeline(player) {
       };
     }
 
-    // 2. Create Scheduler
+    // 2. 创建调度器
     scheduler = createScheduler(
       {
         videoBuffer: options.videoBuffer,
@@ -118,17 +118,17 @@ export function createPipeline(player) {
       },
       {
         onFrame: (packet) => {
-          // Routing
+          // 路由分发
           if (packet.type === MEDIA_TYPE.video) {
             if (videoDecoder) videoDecoder.decode(packet);
           } else if (packet.type === MEDIA_TYPE.audio) {
-            // Audio Routing
+            // 音频路由
             if (options.hasAudio) {
-              // For MSE, audio might go to same decoder if we supported MP4 audio (AAC).
-              // But CommonLoader sent audio to Worker for WCS mode.
-              // And for MSE mode, CommonLoader sent audio to... where?
+              // 对于 MSE，如果我们支持 MP4 音频（AAC），音频可能会进入相同的解码器
+              // 但是 CommonLoader 在 WCS 模式下将音频发送到 Worker
+              // 对于 MSE 模式，CommonLoader 将音频发送到...哪里？
               // CommonLoader: if (type === MEDIA_TYPE.audio) player.decoderWorker.decodeAudio(...)
-              // So Audio ALWAYS goes to Worker (except maybe G711a PCM).
+              // 所以音频总是进入 Worker（除了可能是 G711a PCM）
               if (player.decoderWorker) {
                 player.decoderWorker.decodeAudio(packet.payload, packet.ts);
               }
@@ -138,48 +138,41 @@ export function createPipeline(player) {
       },
     );
 
-    // 3. Create Demuxer
+    // 3. 创建解复用器
     const demuxCallbacks = {
       onPacket: (packet) => {
-        // Push to scheduler
-        // Note: CommonLoader pushed both Audio and Video to bufferList.
+        // 推送到调度器
+        // 注意：CommonLoader 将音频和视频都推送到 bufferList
         scheduler.push(packet);
       },
       onStats: (stats) => {
         player.updateStats(stats);
       },
-      onAudioInfo: (info) => {
-        if (player.audio) {
-          player.audio.updateAudioInfo(info);
-        }
-      },
-      onLog: log,
     };
 
-    // Choose Demuxer based on type
+    // 根据类型选择解复用器
     if (options.demuxType === DEMUX_TYPE.flv) {
       demuxer = createFlvDemuxer(demuxCallbacks, {
         hasAudio: options.hasAudio,
         hasVideo: options.hasVideo,
       });
     } else {
-      // M7S or others not refactored yet, fallback or error?
-      // Assuming FLV for now as per task.
-      // If needed we can wrap M7sLoader similarly.
+      // M7S 或其他尚未重构
+      // 根据任务要求，目前假设使用 FLV
       log("Pipeline", "Only FLV demux is fully refactored. M7S might fail.");
-      // Fallback or just error
+      // 回退还是直接报错
     }
 
-    // 4. Create Stream
+    // 4. 创建流
     const streamCallbacks = {
       onChunk: (chunk) => {
         if (demuxer) demuxer.push(chunk);
       },
       onSuccess: () => {
         player.emit(EVENTS.streamSuccess);
-        // Start playing video
+        // 开始播放视频
         if (player.video) player.video.play();
-        // Start scheduler loop
+        // 启动调度器循环
         if (scheduler) scheduler.start();
       },
       onError: (type, msg) => {
@@ -193,21 +186,21 @@ export function createPipeline(player) {
     if (options.protocol === PLAYER_PLAY_PROTOCOL.fetch) {
       stream = createFetchStream(url, options, streamCallbacks);
     } else {
-      // Websocket not refactored yet?
-      // We can use the old class if we wrap it?
-      // Or just throw error for now.
+      // WebSocket 尚未重构？
+      // 我们可以包装旧类吗？
+      // 或者暂时抛出错误
       log("Pipeline", "Websocket protocol not refactored yet.");
     }
 
-    // Start Stream
+    // 启动流
     if (stream) {
       stream.start();
     }
   };
 
   const pause = () => {
-    // Pause usually means stop stream?
-    // Player.js pause() calls close().
+    // 暂停通常意味着停止流
+    // Player.js 的 pause() 调用 close()
     destroy();
   };
 

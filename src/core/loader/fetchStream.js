@@ -1,17 +1,20 @@
-
+// 作者：kong2dog
+// 日期：2026-1-21
+// 版本：1.0.0
+// 描述：功能性 Fetch 流，用于从 URL 加载流媒体数据
 import { EVENTS_ERROR, FETCH_ERROR } from "../../constant";
 import { isFalse, isFetchSuccess } from "../../utils";
 
 /**
- * Functional Fetch Stream
- * @param {string} url - Stream URL
- * @param {Object} options - Fetch options
- * @param {Object} callbacks - Callbacks for stream events
- * @param {Function} callbacks.onChunk - Called when a chunk is received
- * @param {Function} callbacks.onSuccess - Called when stream connects successfully
- * @param {Function} callbacks.onError - Called when an error occurs
- * @param {Function} callbacks.onStats - Called with stream bitrate stats
- * @returns {Object} - Control object { start, abort }
+ * 功能性 Fetch 流
+ * @param {string} url - 流媒体 URL
+ * @param {Object} options - Fetch 选项
+ * @param {Object} callbacks - 流事件回调函数
+ * @param {Function} callbacks.onChunk - 当接收到数据块时调用
+ * @param {Function} callbacks.onSuccess - 当流连接成功时调用
+ * @param {Function} callbacks.onError - 当发生错误时调用
+ * @param {Function} callbacks.onStats - 当有流比特率统计信息时调用
+ * @returns {Object} - 控制对象 { start, abort }
  */
 export function createFetchStream(url, options = {}, callbacks = {}) {
   const { onChunk, onSuccess, onError, onStats } = callbacks;
@@ -34,7 +37,7 @@ export function createFetchStream(url, options = {}, callbacks = {}) {
       },
       {
         headers: options.headers || {},
-      }
+      },
     );
 
     fetch(url, fetchOptions)
@@ -42,7 +45,10 @@ export function createFetchStream(url, options = {}, callbacks = {}) {
         if (isFalse(isFetchSuccess(res))) {
           abort();
           if (onError) {
-            onError(EVENTS_ERROR.fetchError, `fetch response status is ${res.status} and ok is ${res.ok}`);
+            onError(
+              EVENTS_ERROR.fetchError,
+              `fetch response status is ${res.status} and ok is ${res.ok}`,
+            );
           }
           return;
         }
@@ -58,7 +64,7 @@ export function createFetchStream(url, options = {}, callbacks = {}) {
             .read()
             .then(({ done, value }) => {
               if (done) {
-                // End of stream
+                // 流结束
                 isReading = false;
               } else {
                 if (onStats) {
@@ -72,7 +78,7 @@ export function createFetchStream(url, options = {}, callbacks = {}) {
             })
             .catch((e) => {
               if (!isReading) return;
-              
+
               const errorString = e.toString();
               if (
                 errorString.indexOf(FETCH_ERROR.abortError1) !== -1 ||

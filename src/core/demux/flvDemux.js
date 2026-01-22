@@ -5,28 +5,21 @@ import {
   FRAME_TYPE_EX,
   FRAME_HEADER_EX,
 } from "../../constant";
-import { decodeALaw } from "../../utils/g711.js";
 import { hevcEncoderNalePacketNotLength } from "../../utils";
 
 /**
- * Functional FLV Demuxer
- * @param {Object} callbacks - { onPacket, onStats, onAudioInfo, onLog }
+ * 功能性 FLV 解复用器
+ * @param {Object} callbacks - { onPacket, onStats }
  * @param {Object} config - { hasAudio, hasVideo }
  * @returns {Object} - { push, close }
  */
 export function createFlvDemuxer(callbacks, config = {}) {
-  const { onPacket, onStats, onAudioInfo, onLog } = callbacks;
+  const { onPacket, onStats } = callbacks;
   const { hasAudio = true, hasVideo = true } = config;
 
-  let firstAudio = true;
   let demuxStartTimestamp = null;
 
-  // Helper to log
-  const log = (tag, ...args) => {
-    if (onLog) onLog(tag, ...args);
-  };
-
-  // --- Enhanced H.265 Logic (from CommonLoader) ---
+  // --- 增强型 H.265 逻辑（来自 CommonLoader） ---
   const isEnhancedH265Header = (flags) => {
     return (flags & FRAME_HEADER_EX) === FRAME_HEADER_EX;
   };
@@ -42,7 +35,7 @@ export function createFlvDemuxer(callbacks, config = {}) {
 
     if (packetEx === PACKET_TYPE_EX.PACKET_TYPE_SEQ_START) {
       if (frameTypeEx === FRAME_TYPE_EX.FT_KEY) {
-        // header video info (VPS/SPS/PPS)
+        // 头部视频信息（VPS/SPS/PPS）
         const extraData = payload.slice(5);
         if (!isAV1) {
           const payloadBuffer = new Uint8Array(5 + extraData.length);
@@ -66,7 +59,7 @@ export function createFlvDemuxer(callbacks, config = {}) {
       const isIFrame = frameTypeEx === FRAME_TYPE_EX.FT_KEY;
 
       if (!isAV1) {
-        // h265
+        // H.265
         tmp32[0] = payload[4];
         tmp32[1] = payload[3];
         tmp32[2] = payload[2];
@@ -102,9 +95,9 @@ export function createFlvDemuxer(callbacks, config = {}) {
     }
   };
 
-  // --- Generator Logic ---
+  // --- 生成器逻辑 ---
   function* inputFlv() {
-    // 1. FLV Header (9 bytes)
+    // 1. FLV 头部（9 字节）
     yield 9;
 
     const tmp = new ArrayBuffer(4);
@@ -112,24 +105,24 @@ export function createFlvDemuxer(callbacks, config = {}) {
     const tmp32 = new Uint32Array(tmp);
 
     while (true) {
-      // 2. PreviousTagSize (4 bytes)
-      tmp8[3] = 0; // reset
+      // 2. 前一个标签大小（4 字节）
+      tmp8[3] = 0; // 重置
 
-      // 3. Tag Header (11 bytes) + PreviousTagSize (4 bytes) = 15 bytes total?
-      // Wait, original code: yield 15.
-      // And commented: "Wait, preTagSize=4, Header=11, Total=15"
+      // 3. 标签头部（11 字节）+ 前一个标签大小（4 字节）= 总共 15 字节
+      // 等待，原始代码：yield 15
+      // 注释说明："等待，preTagSize=4，Header=11，Total=15"
       const t = yield 15;
 
-      // Extract Tag Type (offset 4)
+      // 提取标签类型（偏移量 4）
       const type = t[4];
 
-      // Extract Data Length (3 bytes)
+      // 提取数据长度（3 字节）
       tmp8[0] = t[7];
       tmp8[1] = t[6];
       tmp8[2] = t[5];
       const length = tmp32[0];
 
-      // Extract Timestamp (3 bytes + 1 byte extended)
+      // 提取时间戳（3 字节 + 1 字节扩展）
       tmp8[0] = t[10];
       tmp8[1] = t[9];
       tmp8[2] = t[8];
@@ -140,21 +133,17 @@ export function createFlvDemuxer(callbacks, config = {}) {
         ts = tmp32[0];
       }
 
-      // 4. Tag Body (Payload)
+      // 4. 标签体（有效载荷）
       const payload = yield length;
 
-      // 5. Processing
+      // 5. 处理
       switch (type) {
         case FLV_MEDIA_TYPE.audio:
           if (hasAudio) {
             if (onStats) onStats({ abps: payload.byteLength });
 
             if (payload.byteLength > 0) {
-              const firstByte = payload[0];
-              const soundFormat = (firstByte & 0xf0) >> 4;
-
-              // CodecID 7 = G.711 A-law, or others
-              // Pass raw payload to decoder (e.g. WASM)
+              // 将原始有效载荷传递给解码器（WASM）
               if (onPacket) {
                 onPacket({
                   payload: payload,
@@ -170,19 +159,17 @@ export function createFlvDemuxer(callbacks, config = {}) {
         case FLV_MEDIA_TYPE.video:
           if (!demuxStartTimestamp) {
             demuxStartTimestamp = Date.now();
-            // We might want to notify timing?
           }
           if (hasVideo) {
             if (onStats) onStats({ vbps: payload.byteLength });
 
             const flags = payload[0];
-            const codecId = flags & 0x0f;
 
-            // Enhanced H.265
+            // 增强型 H.265
             if (isEnhancedH265Header(flags)) {
               decodeEnhancedH265Video(payload, ts);
             } else {
-              // Standard FLV
+              // 标准 FLV
               const isIFrame = payload[0] >> 4 === 1;
 
               if (payload.byteLength > 0) {
@@ -209,7 +196,7 @@ export function createFlvDemuxer(callbacks, config = {}) {
     }
   }
 
-  // --- Dispatcher Logic ---
+  // --- 分发器逻辑 ---
   const gen = inputFlv();
   let need = gen.next();
   let buffer = null;
